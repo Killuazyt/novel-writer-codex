@@ -1,0 +1,31 @@
+{
+  "name": "novel-writer-codex",
+  "version": "0.1.0",
+  "description": "面向 Codex 的长篇网文创作工作流移植（迁移中）",
+  "author": {
+    "name": "Killuazyt",
+    "url": "https://github.com/Killuazyt"
+  },
+  "homepage": "https://github.com/Killuazyt/novel-writer-codex",
+  "repository": "https://github.com/Killuazyt/novel-writer-codex",
+  "license": "GPL-3.0",
+  "keywords": [
+    "codex",
+    "webnovel",
+    "story-system",
+    "writing"
+  ],
+  "interface": {
+    "displayName": "Novel Writer Codex",
+    "shortDescription": "Codex 长篇网文创作工作流（迁移中）",
+    "longDescription": "将 webnovel-writer 的 Story System、记忆、审查与写作流程移植到 Codex。当前已建立插件外壳、共享运行时与 hooks，业务 Skills 尚在适配。",
+    "developerName": "Killuazyt",
+    "category": "Productivity",
+    "capabilities": [],
+    "websiteURL": "https://github.com/Killuazyt/novel-writer-codex",
+    "defaultPrompt": [
+      "查看 Novel Writer Codex 的迁移状态和下一步。",
+      "检查当前小说项目，但不要自动修改文件。"
+    ]
+  }
+}

@@ -1,0 +1,2 @@
+-r scripts/requirements.txt
+-r dashboard/requirements.txt

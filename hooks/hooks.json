@@ -1,0 +1,46 @@
+{
+  "description": "Novel Writer Codex runtime guardrails: show short project status on session start and block direct writes to Story System/read-model files.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/hooks/session_start.py\"",
+            "commandWindows": "python -X utf8 \"${PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 5,
+            "statusMessage": "Loading webnovel project status",
+            "additionalContextLimit": 1000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/hooks/guard_runtime_write.py\"",
+            "commandWindows": "python -X utf8 \"${PLUGIN_ROOT}/hooks/guard_runtime_write.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking Story System write safety"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -X utf8 \"${PLUGIN_ROOT}/hooks/guard_runtime_write.py\"",
+            "commandWindows": "python -X utf8 \"${PLUGIN_ROOT}/hooks/guard_runtime_write.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking Story System write safety"
+          }
+        ]
+      }
+    ]
+  }
+}

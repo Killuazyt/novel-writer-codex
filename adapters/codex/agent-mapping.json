@@ -1,0 +1,31 @@
+{
+  "schema_version": "novel-writer-codex-agent-mapping/v1",
+  "host": "codex",
+  "distribution_status": "design-only",
+  "agents": [
+    {
+      "upstream": "context-agent",
+      "canonical": "webnovel-context-agent",
+      "role": "assemble prewrite context and task brief",
+      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+    },
+    {
+      "upstream": "reviewer",
+      "canonical": "webnovel-reviewer",
+      "role": "review draft and return blocking issues",
+      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+    },
+    {
+      "upstream": "data-agent",
+      "canonical": "webnovel-data-agent",
+      "role": "produce commit artifacts without writing projections",
+      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+    },
+    {
+      "upstream": "deconstruction-agent",
+      "canonical": "webnovel-deconstruction-agent",
+      "role": "deconstruct reference works and extract reusable knowledge",
+      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+    }
+  ]
+}
