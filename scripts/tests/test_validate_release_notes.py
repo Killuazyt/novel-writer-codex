@@ -14,6 +14,7 @@ def _ensure_scripts_on_path() -> None:
 
 _ensure_scripts_on_path()
 
+import validate_release_notes as release_validator  # noqa: E402
 from validate_release_notes import validate_release_notes  # noqa: E402
 
 
@@ -24,13 +25,13 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _write_release_files(root: Path, *, version: str = "1.2.3", previous_tag: str = "v1.2.2") -> None:
     _write_json(
-        root / "webnovel-writer" / ".claude-plugin" / "plugin.json",
-        {"name": "webnovel-writer", "version": version, "description": "desc"},
+        root / ".codex-plugin" / "plugin.json",
+        {"name": "novel-writer-codex", "version": version, "description": "desc"},
     )
     (root / "CHANGELOG.md").write_text(
         f"""# 更新日志
 
-## v{version} - 写章结果更清楚
+## {version} - 写章结果更清楚
 
 发版范围：`{previous_tag}..v{version}`。
 
@@ -77,6 +78,28 @@ def test_validate_release_notes_passes_complete_author_facing_notes(tmp_path):
     assert report["ok"] is True
 
 
+def test_validate_release_notes_reads_version_from_codex_manifest(tmp_path):
+    _write_release_files(tmp_path)
+
+    report = validate_release_notes(tmp_path, previous_tag="v1.2.2")
+
+    assert report["ok"] is True
+    assert report["version"] == "1.2.3"
+
+
+def test_validate_release_notes_reports_old_manifest_identity(tmp_path):
+    _write_release_files(tmp_path)
+    _write_json(
+        tmp_path / ".codex-plugin" / "plugin.json",
+        {"name": "webnovel-writer", "version": "1.2.3", "description": "desc"},
+    )
+
+    report = validate_release_notes(tmp_path, previous_tag="v1.2.2")
+
+    assert report["ok"] is False
+    assert any(item["code"] == "manifest.invalid" for item in report["issues"])
+
+
 def test_validate_release_notes_requires_release_file(tmp_path):
     _write_release_files(tmp_path)
     (tmp_path / "releases" / "v1.2.3.md").unlink()
@@ -104,7 +127,7 @@ def test_validate_release_notes_requires_previous_tag_in_current_changelog_secti
     changelog.write_text(
         """# 更新日志
 
-## v1.2.3 - 写章结果更清楚
+## 1.2.3 - 写章结果更清楚
 
 发版范围：上个版本到本版本。
 
@@ -112,7 +135,7 @@ def test_validate_release_notes_requires_previous_tag_in_current_changelog_secti
 
 - 作者写章反馈更清楚。
 
-## v1.2.2 - 旧版本
+## 1.2.2 - 旧版本
 
 发版范围：`v1.2.1..v1.2.2`。
 """,
@@ -123,3 +146,30 @@ def test_validate_release_notes_requires_previous_tag_in_current_changelog_secti
 
     assert report["ok"] is False
     assert any(item["code"] == "changelog.range" for item in report["issues"])
+
+
+def test_validate_release_notes_internal_failure_is_structured_exit_two(
+    monkeypatch, capsys, tmp_path
+):
+    _write_release_files(tmp_path)
+
+    def fail_validate(*_args, **_kwargs):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(release_validator, "validate_release_notes", fail_validate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "validate_release_notes.py",
+            "--root",
+            str(tmp_path),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert release_validator.main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert report["issues"][0]["code"] == "validator.internal"

@@ -6,7 +6,7 @@
 
 `F:\codexnovel\novel-writer-codex\docs\IMPLEMENTATION_PLAN.md`
 
-本文件已于 2026-08-06 以 UTF-8 无 BOM 回读校验，并继续作为唯一详细实施清单；[PORTING.md](PORTING.md) 只保留简要迁移状态。本轮实施止于 M1，不进入 M2。
+本文件已于 2026-08-07 以 UTF-8 无 BOM 回读校验，并继续作为唯一详细实施清单；[PORTING.md](PORTING.md) 只保留简要迁移状态。本轮实施已完成 M2，并按范围停止，不进入 M3。
 
 ### 最终目标
 
@@ -85,7 +85,7 @@
 - `<workspace>/.codex/.webnovel-current-project`
 - `<WEBNOVEL_HOME>/workspaces.json`
 
-其中 M1 已完成 `WEBNOVEL_HOME`、native registry 与 `.env` 优先级；工作区 pointer 的完整 Codex 化仍属于 M2，M1 不越界迁移。
+其中 M1 已完成 `WEBNOVEL_HOME`、native registry 与 `.env` 优先级；M2 已完成工作区 pointer 的 Codex 化、解析来源标记和旧宿主只读兼容。
 
 `.env` 优先级固定为：进程环境变量 → 小说项目 `.env` → `<WEBNOVEL_HOME>/.env` → 旧 Claude `.env` 只读 fallback。任何诊断输出都不得打印密钥值。
 
@@ -278,13 +278,13 @@ Agent 使用规则：
 
 任务：
 
-- [ ] 完成工作区 pointer 的 Codex 化和其余 runtime 宿主中立化。
-- [ ] 所有剩余 pointer 与 runtime 状态改写 `.codex`/`WEBNOVEL_HOME`；native registry 已在 M1 完成。
-- [ ] `.claude`、`CLAUDE_*` 仅保留只读 fallback，并在结果中标记 `legacy_read_only`。
-- [ ] Skills 统一通过自身文件位置推导插件根，不依赖 `PLUGIN_ROOT`；该环境变量只在 hooks 中使用。
-- [ ] 修复版本、package、release validator 中的 `.claude-plugin`、嵌套仓库路径和旧插件名硬编码。
-- [ ] 建立 `upstream_sync.py` 及 lock 漂移测试。
-- [ ] 把 Bash-only 语法、Claude slash command、Claude 工具名纳入静态扫描。
+- [x] 完成工作区 pointer 的 Codex 化和其余 runtime 宿主中立化。
+- [x] 所有剩余 pointer 与 runtime 状态改写 `.codex`/`WEBNOVEL_HOME`；native registry 已在 M1 完成。
+- [x] `.claude`、`CLAUDE_*` 仅保留只读 fallback，并在结果中标记 `legacy_read_only`。
+- [x] 插件根与参考资料通过调用文件位置自定位，不依赖 `PLUGIN_ROOT`；未来 Skills 的同一约束已纳入校验，生产 Skills 仍留在 M3。
+- [x] 修复版本、package、release validator 中的 `.claude-plugin`、嵌套仓库路径和旧插件名硬编码。
+- [x] 建立 `upstream_sync.py` 及 lock 漂移测试。
+- [x] 把 Bash-only 语法、Claude slash command、Claude 工具名纳入静态扫描。
 
 验收：
 
@@ -486,7 +486,7 @@ preflight
 任务：
 
 - [ ] 建立 GitHub Actions。
-- [ ] Codex 化 version、package、release-note validator。
+- [ ] 将 M2 已 Codex 化的 version、package、release-note validator 接入 RC/CI/Marketplace/release 发布链。
 - [ ] 加入 clean archive allowlist、secret scan、依赖检查和 Dashboard dist 漂移检查。
 - [ ] 创建 `.agents/plugins/marketplace.json`。
 - [ ] 完成安装、升级、禁用、卸载和缓存更新测试。
@@ -598,6 +598,7 @@ Marketplace 条目固定为：
 | 2026-08-06 | M0.1 | complete | —（未提交） | UTF-8/BOM 回读；README/PORTING/support 链接检查 | pass | 本计划继续作为唯一详细清单 |
 | 2026-08-06 | M0 | complete | —（未提交） | hygiene/adapter/Plugin Creator；17 hooks；临时 index `diff --check` | pass | 上游 330 文件与总哈希一致；远端 SHA 未漂移 |
 | 2026-08-06 | M1 | complete | —（未提交） | collect/upstream-collect；full；failure/windows/integration | pass | 798 = 基线 746 + 本轮 52；732 passed、66 deselected；coverage 90.16%；9 个宿主路径未变化 |
+| 2026-08-07 | M2 | complete | 本轮两项原子提交（见 Git） | runtime/package/upstream 定向测试；validators；collect/upstream-collect/full；UTF-8/hygiene/diff | pass | 862 collected；789 passed、73 deselected；coverage 90.19%；冻结源 330/330 且 prepare 幂等；9 个宿主路径未变化；下一项 M3 |
 
 ### 默认假设
 

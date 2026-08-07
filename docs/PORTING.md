@@ -1,11 +1,11 @@
 # Codex 移植审计与路线
 
-核验日期：2026-08-06
+核验日期：2026-08-07
 上游基线：`master@2041abad78211e29a67a2f0c64b2a97a747dce57`（manifest `6.2.1`）
 
 详细任务、验收门槛和执行日志以 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 为唯一实施清单；本文只保留迁移状态摘要。
 
-当前里程碑：M0.1、M0、M1 已于 2026-08-06 完成并验收；实施已按范围停在 M1，M2 及以后尚未开始。
+当前里程碑：M0.1、M0、M1、M2 已完成并验收；实施已按范围停在 M2，下一项为 M3，本轮不进入 M3。
 
 ## 1. 项目本质
 
@@ -33,16 +33,19 @@
 | P2 | Dashboard 启动 | Codex Desktop/Windows 下应默认 `--no-browser`，后台进程使用隐藏窗口，并明确端口/日志 |
 | P2 | 文档机械替换 | 大量 `/webnovel-*` 与 `${CLAUDE_PLUGIN_ROOT}` 不能盲目全局替换，应从活跃 Skill 调用链逐项迁移 |
 
-## 3. 已完成的 M0/M1 基础
+## 3. 已完成的 M0–M2 基础
 
 - 建立 Codex manifest、GPL-3.0 派生归属、上游 lock 与只读 remote。
 - 锁定上游 330 个插件子树文件及逐文件哈希，建立 archive/secret/UTF-8/BOM/whitespace 仓库卫生检查。
 - 统一 `WEBNOVEL_HOME`、native registry 与 `.env` 优先级；旧 Claude registry 和 `.env` 仅只读 fallback。
 - 建立 pytest 导入前隔离、禁网、30 秒超时、双层真实用户目录保护及主契约分类。
-- 提供 `smoke`、`collect`、`full`、`upstream-collect` runner；798 项安全收集，当前 Codex 有效全集 732 项通过。
+- 提供 `smoke`、`collect`、`full`、`upstream-collect` runner；862 项安全收集，当前 Codex 有效全集 789 项通过，coverage 90.19%。
 - preflight 与 Codex validator 返回结构化结果；hook 已保护 state、summary 及其他 runtime 投影。
+- 项目定位固定为 CLI、环境、CWD、Codex pointer/registry、旧 pointer/registry 的顺序，并返回来源与兼容模式；显式路径必须直接是书项目根。
+- 新绑定只写明确 workspace 的 `.codex/.webnovel-current-project` 与 `WEBNOVEL_HOME`；旧 `.claude` 状态只读，参考资料按 Codex 项目、旧项目、插件内置逐文件回退。
+- package/version/release 校验已切换到 Codex 单根布局；离线 upstream check/prepare 已验证冻结源 330/330 与幂等暂存。
 
-Skills、项目 Agents、工作区 pointer 全面 Codex 化和发布链仍未实施，分别留在 M2/M3 及后续里程碑。
+生产 Skills、项目 Agents 和发布链仍未实施，分别留在 M3 及后续里程碑；M2 只建立了它们必须遵守的宿主中立静态契约。
 
 ## 4. 推荐迁移顺序
 

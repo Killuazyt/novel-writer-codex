@@ -13,13 +13,13 @@
 - 上游仓库：`https://github.com/lingfengQAQ/webnovel-writer`；冻结基线为 `master@2041abad78211e29a67a2f0c64b2a97a747dce57`，上游版本标记 `6.2.1`。
 - 目标 GitHub 仓库：`https://github.com/Killuazyt/novel-writer-codex.git`。
 
-### 当前停点（2026-08-06）
+### 当前停点（2026-08-07）
 
-- 目前只完成了实施计划文件的保存与 UTF-8 无 BOM 回读校验；尚未开始 M0 的仓库实施。
-- 下一项仍是 `M0.1`。它包含 README/PORTING 链接等工作，所以计划中的复选框保持未勾选；不要因为计划文件已经存在就跳到 M0.2。
-- Git 已在 `main` 初始化并配置 `origin`，但仓库尚无首个提交；当前大量 untracked 文件是既有项目基线，不是可随意清理的临时文件。
-- 尚未创建 `upstream` remote、`upstream-lock.json`、9 个 Codex Skill、4 个项目 Agent、CI 或 Marketplace。
-- 当前全量 pytest 含 Claude 宿主契约，并可能访问真实 `~/.claude`。完成 M1 测试隔离前，禁止直接运行未隔离的全量 pytest；只能运行计划明确列出的安全定向检查。
+- M0.1、M0、M1、M2 已完成并通过本地 gate；当前按范围停在 M2，下一项是 `M3`，未经用户明确要求不得提前创建生产 Skills 或 Agents。
+- M2 已完成严格项目定位、Codex pointer/registry、参考资料 provenance、Codex package/version/release 校验和离线 upstream check/prepare；Story System 与小说数据合同未改。
+- 当前安全收集 862 项；`full` 为 789 passed、73 deselected，`scripts/data_modules` coverage 90.19%，9 个真实宿主保护路径前后零变化。
+- 已有 `upstream` remote 与 `upstream-lock.json`；仍未创建 9 个生产 Codex Skill、4 个项目 Agent、CI、Marketplace、tag 或 release。
+- 全量 pytest 必须使用 `scripts/run_tests.ps1` 或显式 bootstrap 的定向命令；不得运行会绕过隔离、契约筛选或真实宿主状态保护的原始 pytest。
 - 不要沿用聊天中的口头进度推断完成状态；先检查计划复选框、执行日志、工作树和实际测试证据。
 
 ### 已锁定的移植决策
@@ -37,7 +37,7 @@
 
 1. 每个新对话先读取 `docs/IMPLEMENTATION_PLAN.md`，确认用户指定的唯一计划项及其前置 gate。
 2. 检查本地权威源码、当前工作树和已有用户改动；一次只实现一个可独立验收的计划项，不擅自扩展到下一项。
-3. 先运行该项的安全定向测试，再运行所属里程碑允许的 gate；M1 完成前不得运行未隔离的全量 pytest。
+3. 先运行该项的安全定向测试，再运行所属里程碑 gate；所有 pytest 均须保留 M1 建立的隔离、超时、契约筛选与真实状态保护。
 4. 回读所有中文文件，检查 UTF-8、无 BOM、无乱码；同时检查 `git diff --check` 和与本项相关的安全边界。
 5. 只在验证通过后更新对应复选框和实施日志，并汇报修改文件、验证命令、结果、限制及下一项。
 6. 里程碑完成后先向用户汇报并等待确认；未经确认不创建提交。push、tag、release 永远另行授权。

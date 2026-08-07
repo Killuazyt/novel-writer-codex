@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Check or update Codex plugin version metadata.
+
+The Codex downstream is a single repository whose plugin manifest lives at
+``.codex-plugin/plugin.json``.  Marketplace metadata and the README version
+marker are optional until the release milestone; when present, they are kept
+in sync without making their absence an M2 failure.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -7,23 +17,24 @@ from pathlib import Path
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-PLUGIN_JSON_PATH = ROOT / "webnovel-writer" / ".claude-plugin" / "plugin.json"
-MARKETPLACE_JSON_PATH = ROOT / ".claude-plugin" / "marketplace.json"
-README_PATH = ROOT / "README.md"
-PLUGIN_NAME = "webnovel-writer"
-VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
-README_ROW_PATTERN = re.compile(
-    r"^\| \*\*v(?P<version>[^\s*]+)(?P<current> \(当前\))?\*\* \| (?P<notes>.*) \|$"
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_MANIFEST_REL = Path(".codex-plugin") / "plugin.json"
+MARKETPLACE_REL = Path(".agents") / "plugins" / "marketplace.json"
+README_FILENAME = "README.md"
+PLUGIN_NAME = "novel-writer-codex"
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+README_VERSION_PATTERN = re.compile(
+    r"<!--\s*novel-writer-codex-version:\s*(?P<version>[^\s]+)\s*-->",
+    re.IGNORECASE,
 )
-README_BADGE_PATTERN = re.compile(r"(badge/version-)(?P<version>\d+\.\d+\.\d+)(-brightgreen\.svg)")
-README_HEADERS = {"| 版本 | 说明 |", "| 版本 | 主要变化 |"}
-README_SEPARATORS = {"|------|------|", "|------|----------|"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as file:
-        return json.load(file)
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return payload
 
 
 def save_json(path: Path, payload: dict[str, Any]) -> None:
@@ -42,140 +53,147 @@ def save_text(path: Path, content: str) -> None:
 
 def get_marketplace_plugin(payload: dict[str, Any]) -> dict[str, Any]:
     plugins = payload.get("plugins", [])
+    if not isinstance(plugins, list):
+        raise ValueError("marketplace.json plugins must be an array")
     for plugin in plugins:
-        if plugin.get("name") == PLUGIN_NAME:
+        if isinstance(plugin, dict) and plugin.get("name") == PLUGIN_NAME:
             return plugin
     raise ValueError(f"Plugin {PLUGIN_NAME} not found in marketplace.json")
 
 
-def parse_readme_rows(lines: list[str]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for index, line in enumerate(lines):
-        match = README_ROW_PATTERN.match(line.strip())
-        if not match:
-            continue
-        rows.append(
-            {
-                "index": index,
-                "version": match.group("version"),
-                "notes": match.group("notes"),
-                "is_current": bool(match.group("current")),
-            }
-        )
-    return rows
+def find_readme_version(content: str) -> str | None:
+    """Return the optional stable README version marker."""
 
-
-def format_readme_row(version: str, notes: str, is_current: bool) -> str:
-    marker = " (当前)" if is_current else ""
-    return f"| **v{version}{marker}** | {notes.strip()} |"
+    match = README_VERSION_PATTERN.search(content)
+    return str(match.group("version")) if match else None
 
 
 def get_readme_current_version(content: str) -> str:
-    rows = parse_readme_rows(content.splitlines())
-    current_rows = [row for row in rows if row["is_current"]]
-    if len(current_rows) != 1:
-        raise ValueError("README.md must contain exactly one current release row")
-    return str(current_rows[0]["version"])
+    """Return the README marker or raise for callers that require one."""
+
+    version = find_readme_version(content)
+    if version is None:
+        raise ValueError(
+            "README.md version marker not found; add "
+            "'<!-- novel-writer-codex-version: X.Y.Z -->' before release validation"
+        )
+    return version
 
 
 def get_readme_badge_version(content: str) -> str:
-    match = README_BADGE_PATTERN.search(content)
-    if not match:
-        raise ValueError("README.md version badge not found")
-    return str(match.group("version"))
+    """Compatibility alias retained for the old validator API."""
+
+    return get_readme_current_version(content)
 
 
-def update_readme_badge(content: str, version: str) -> str:
-    if not README_BADGE_PATTERN.search(content):
-        raise ValueError("README.md version badge not found")
-    return README_BADGE_PATTERN.sub(rf"\g<1>{version}\g<3>", content, count=1)
+def update_readme_version(content: str, version: str) -> str:
+    """Update an existing marker; M2 never inserts release documentation."""
+
+    if not README_VERSION_PATTERN.search(content):
+        return content
+    return README_VERSION_PATTERN.sub(
+        f"<!-- novel-writer-codex-version: {version} -->",
+        content,
+        count=1,
+    )
 
 
 def update_readme_release(content: str, version: str, release_notes: str | None) -> str:
-    content = update_readme_badge(content, version)
-    lines = content.splitlines()
+    """Compatibility wrapper; release-note authoring remains outside M2."""
 
-    try:
-        header_index = next(index for index, line in enumerate(lines) if line.strip() in README_HEADERS)
-    except StopIteration as error:
-        raise ValueError("README.md release table header not found") from error
-
-    separator_index = header_index + 1
-    if separator_index >= len(lines) or lines[separator_index].strip() not in README_SEPARATORS:
-        raise ValueError("README.md release table separator not found")
-
-    rows = parse_readme_rows(lines)
-    target_row = next((row for row in rows if row["version"] == version), None)
-
-    for row in rows:
-        is_target = row["version"] == version
-        notes = release_notes if is_target and release_notes is not None else row["notes"]
-        lines[row["index"]] = format_readme_row(row["version"], notes, is_target)
-
-    if target_row is None:
-        if not release_notes:
-            raise ValueError(
-                "Release notes are required when the target version does not exist in README.md"
-            )
-        lines.insert(separator_index + 1, format_readme_row(version, release_notes, True))
-
-    return "\n".join(lines) + "\n"
+    del release_notes
+    return update_readme_version(content, version)
 
 
-def sync_versions(version: str | None = None, release_notes: str | None = None) -> tuple[str, str, bool]:
-    plugin_payload = load_json(PLUGIN_JSON_PATH)
-    marketplace_payload = load_json(MARKETPLACE_JSON_PATH)
-    readme_content = load_text(README_PATH)
-    marketplace_plugin = get_marketplace_plugin(marketplace_payload)
+def _metadata_paths(root: str | Path | None = None) -> tuple[Path, Path, Path, Path]:
+    repo_root = Path(root) if root is not None else ROOT
+    repo_root = repo_root.expanduser().resolve()
+    return (
+        repo_root,
+        repo_root / PLUGIN_MANIFEST_REL,
+        repo_root / MARKETPLACE_REL,
+        repo_root / README_FILENAME,
+    )
 
-    previous_version = str(plugin_payload.get("version", ""))
+
+def _validate_manifest_identity(payload: dict[str, Any], path: Path) -> None:
+    name = str(payload.get("name") or "")
+    if name != PLUGIN_NAME:
+        raise ValueError(f"{path} name must be {PLUGIN_NAME!r}, got {name!r}")
+
+
+def sync_versions(
+    version: str | None = None,
+    release_notes: str | None = None,
+    *,
+    root: str | Path | None = None,
+) -> tuple[str, str, bool]:
+    repo_root, manifest_path, marketplace_path, readme_path = _metadata_paths(root)
+    del repo_root
+    plugin_payload = load_json(manifest_path)
+    _validate_manifest_identity(plugin_payload, manifest_path)
+
+    previous_version = str(plugin_payload.get("version") or "")
     target_version = version or previous_version
+    if not VERSION_PATTERN.fullmatch(target_version):
+        raise ValueError(f"invalid semantic version: {target_version!r}")
+
     changed = False
-
-    if plugin_payload.get("version") != target_version:
+    if previous_version != target_version:
         plugin_payload["version"] = target_version
+        save_json(manifest_path, plugin_payload)
         changed = True
 
-    if marketplace_plugin.get("version") != target_version:
-        marketplace_plugin["version"] = target_version
-        changed = True
+    if readme_path.is_file():
+        readme_content = load_text(readme_path)
+        updated_readme = update_readme_release(readme_content, target_version, release_notes)
+        if updated_readme != readme_content:
+            save_text(readme_path, updated_readme)
+            changed = True
 
-    updated_readme = update_readme_release(readme_content, target_version, release_notes)
-    if updated_readme != readme_content:
-        save_text(README_PATH, updated_readme)
-        changed = True
-
-    if changed:
-        save_json(PLUGIN_JSON_PATH, plugin_payload)
-        save_json(MARKETPLACE_JSON_PATH, marketplace_payload)
+    # Marketplace is introduced in a later milestone.  If a development
+    # fixture already has a conventional version field, keep that field in
+    # sync; absence of the file or field is intentionally a no-op.
+    if marketplace_path.is_file():
+        marketplace_payload = load_json(marketplace_path)
+        marketplace_plugin = get_marketplace_plugin(marketplace_payload)
+        if "version" in marketplace_plugin and marketplace_plugin.get("version") != target_version:
+            marketplace_plugin["version"] = target_version
+            save_json(marketplace_path, marketplace_payload)
+            changed = True
 
     return previous_version, target_version, changed
 
 
-def check_versions(expected_version: str | None = None) -> int:
-    plugin_payload = load_json(PLUGIN_JSON_PATH)
-    marketplace_payload = load_json(MARKETPLACE_JSON_PATH)
-    readme_content = load_text(README_PATH)
-    marketplace_plugin = get_marketplace_plugin(marketplace_payload)
-
-    plugin_version = str(plugin_payload.get("version", ""))
-    marketplace_version = str(marketplace_plugin.get("version", ""))
-    readme_version = get_readme_current_version(readme_content)
-    readme_badge_version = get_readme_badge_version(readme_content)
+def check_versions(
+    expected_version: str | None = None,
+    *,
+    root: str | Path | None = None,
+) -> int:
+    _, manifest_path, marketplace_path, readme_path = _metadata_paths(root)
+    plugin_payload = load_json(manifest_path)
+    _validate_manifest_identity(plugin_payload, manifest_path)
+    plugin_version = str(plugin_payload.get("version") or "")
 
     mismatches: list[str] = []
-    if plugin_version != marketplace_version:
-        mismatches.append(
-            f"plugin.json={plugin_version}, marketplace.json={marketplace_version}"
-        )
-    if plugin_version != readme_version:
-        mismatches.append(f"plugin.json={plugin_version}, README.md={readme_version}")
-    if plugin_version != readme_badge_version:
-        mismatches.append(f"plugin.json={plugin_version}, README badge={readme_badge_version}")
+    if not VERSION_PATTERN.fullmatch(plugin_version):
+        mismatches.append(f"plugin.json has invalid version={plugin_version!r}")
     if expected_version and plugin_version != expected_version:
-        mismatches.append(
-            f"expected={expected_version}, current release metadata={plugin_version}"
-        )
+        mismatches.append(f"expected={expected_version}, plugin.json={plugin_version}")
+
+    if readme_path.is_file():
+        readme_version = find_readme_version(load_text(readme_path))
+        if readme_version is not None and readme_version != plugin_version:
+            mismatches.append(f"plugin.json={plugin_version}, README.md={readme_version}")
+
+    if marketplace_path.is_file():
+        marketplace_payload = load_json(marketplace_path)
+        marketplace_plugin = get_marketplace_plugin(marketplace_payload)
+        marketplace_version = marketplace_plugin.get("version")
+        if marketplace_version is not None and str(marketplace_version) != plugin_version:
+            mismatches.append(
+                f"plugin.json={plugin_version}, marketplace.json={marketplace_version}"
+            )
 
     if mismatches:
         print("Version mismatch detected:")
@@ -188,23 +206,21 @@ def check_versions(expected_version: str | None = None) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync Claude plugin release metadata")
+    parser = argparse.ArgumentParser(description="Sync Codex plugin release metadata")
+    parser.add_argument("--root", default="", help="仓库根目录，默认由脚本位置推导")
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Check whether plugin metadata and README release info are in sync",
+        help="Check whether present plugin metadata is in sync",
     )
-    parser.add_argument(
-        "--version",
-        help="Update release metadata to the given semantic version",
-    )
+    parser.add_argument("--version", help="Update metadata to the given semantic version")
     parser.add_argument(
         "--expected-version",
-        help="When used with --check, require the current release metadata to match this version",
+        help="When used with --check, require plugin.json to match this version",
     )
     parser.add_argument(
         "--release-notes",
-        help="Release notes used for the README current release row",
+        help="Reserved for the later release workflow; M2 does not author release notes",
     )
     args = parser.parse_args()
 
@@ -217,13 +233,17 @@ def main() -> int:
 
     try:
         if args.check:
-            return check_versions(expected_version=args.expected_version)
+            return check_versions(
+                expected_version=args.expected_version,
+                root=args.root or None,
+            )
 
         previous_version, target_version, changed = sync_versions(
             version=args.version,
             release_notes=args.release_notes,
+            root=args.root or None,
         )
-    except ValueError as error:
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Error: {error}")
         return 1
 

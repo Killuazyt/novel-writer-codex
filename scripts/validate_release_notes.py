@@ -12,7 +12,7 @@ from typing import Any
 import sync_plugin_version
 
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+ROOT = Path(__file__).resolve().parents[1]
 VERSION_RE = sync_plugin_version.VERSION_PATTERN
 REQUIRED_RELEASE_HEADINGS = (
     "## 发版范围",
@@ -38,7 +38,12 @@ def _load_text(path: Path) -> tuple[str, str]:
 
 
 def _current_version(root: Path) -> str:
-    payload = sync_plugin_version.load_json(root / "webnovel-writer" / ".claude-plugin" / "plugin.json")
+    payload = sync_plugin_version.load_json(root / ".codex-plugin" / "plugin.json")
+    name = str(payload.get("name") or "")
+    if name != sync_plugin_version.PLUGIN_NAME:
+        raise ValueError(
+            f"plugin name must be {sync_plugin_version.PLUGIN_NAME!r}, got {name!r}"
+        )
     return str(payload.get("version") or "")
 
 
@@ -78,7 +83,7 @@ def _infer_previous_tag(root: Path, version: str) -> str:
 
 
 def _changelog_section(text: str, version: str) -> str:
-    heading_re = re.compile(rf"^##\s+v{re.escape(version)}(?:\s|$)", re.MULTILINE)
+    heading_re = re.compile(rf"^##\s+v?{re.escape(version)}(?:\s|$)", re.MULTILINE)
     match = heading_re.search(text)
     if not match:
         return ""
@@ -93,10 +98,22 @@ def validate_release_notes(
     version: str | None = None,
     previous_tag: str | None = None,
 ) -> dict[str, Any]:
-    repo_root = Path(root) if root is not None else ROOT
-    target_version = version or _current_version(repo_root)
-    previous = previous_tag or _infer_previous_tag(repo_root, target_version)
+    repo_root = (Path(root) if root is not None else ROOT).expanduser().resolve()
     issues: list[dict[str, str]] = []
+    try:
+        manifest_version = _current_version(repo_root)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        manifest_version = ""
+        issues.append(
+            _issue(
+                "manifest.invalid",
+                message=str(exc),
+                path=str(repo_root / ".codex-plugin" / "plugin.json"),
+                repair="恢复 novel-writer-codex 的 UTF-8 Codex manifest。",
+            )
+        )
+    target_version = version or manifest_version
+    previous = previous_tag or _infer_previous_tag(repo_root, target_version)
 
     if not VERSION_RE.fullmatch(target_version):
         issues.append(_issue("version.invalid", message=f"invalid version: {target_version}", repair="使用 X.Y.Z 版本号。"))
@@ -169,7 +186,7 @@ def validate_release_notes(
             issues.append(
                 _issue(
                     "changelog.version",
-                    message=f"CHANGELOG.md missing v{target_version}",
+                    message=f"CHANGELOG.md missing {target_version}",
                     path=str(changelog_path),
                     repair="在 CHANGELOG.md 中新增当前版本小节。",
                 )
@@ -222,13 +239,35 @@ def main() -> int:
     parser.add_argument("--format", choices=["text", "json"], default="text")
     args = parser.parse_args()
 
-    report = validate_release_notes(
-        args.root or None,
-        version=args.version or None,
-        previous_tag=args.previous_tag or None,
-    )
-    print(format_report(report, args.format))
-    return 0 if report.get("ok") else 1
+    root = (Path(args.root) if args.root else ROOT).expanduser().resolve()
+    try:
+        report = validate_release_notes(
+            root,
+            version=args.version or None,
+            previous_tag=args.previous_tag or None,
+        )
+        print(format_report(report, args.format))
+        return 0 if report.get("ok") else 1
+    except Exception as exc:
+        report = {
+            "schema_version": "webnovel-release-notes-validator/v1",
+            "ok": False,
+            "root": str(root),
+            "version": args.version,
+            "previous_tag": args.previous_tag,
+            "release_note": "",
+            "changelog": str(root / "CHANGELOG.md"),
+            "issues": [
+                _issue(
+                    "validator.internal",
+                    message=f"{type(exc).__name__}: {exc}",
+                    path=str(root),
+                    repair="检查 validator 实现或文件系统后重试。",
+                )
+            ],
+        }
+        print(format_report(report, args.format))
+        return 2
 
 
 if __name__ == "__main__":

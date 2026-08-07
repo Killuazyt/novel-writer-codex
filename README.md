@@ -1,5 +1,7 @@
 # Novel Writer Codex
 
+<!-- novel-writer-codex-version: 0.1.0 -->
+
 `novel-writer-codex` 是 [lingfengQAQ/webnovel-writer](https://github.com/lingfengQAQ/webnovel-writer) 的 Codex 适配项目。目标不是重写创作引擎，而是保留原项目成熟的 Python runtime、Story System、记忆、审查与投影链，只为 Codex 增加一层薄适配。
 
 > 当前阶段：`0.1.0` 基础迁移中，尚未发布可供日常创作使用的完整版本。
@@ -13,7 +15,8 @@
 | Git / Codex 插件外壳 | 已完成 | 主分支为 `main`，已有 `.codex-plugin/plugin.json` |
 | M0 上游冻结与仓库卫生 | 已完成 | 锁定 330 个上游文件、逐文件哈希和只读 remote；保护边界与文本规则已验证 |
 | M1 测试隔离与宿主契约 | 已完成 | 798 项可安全收集；当前 Codex 有效全集 732 项通过，coverage 90.16% |
-| Python runtime 与资源 | 基线已导入 | `scripts/`、`references/`、`templates/`、`dashboard/`、`evals/` 来自锁定上游，宿主绑定点仍在逐项清理 |
+| M2 宿主中立 runtime 与上游同步 | 已完成 | 862 项安全收集；789 项当前 Codex 契约通过，coverage 90.19%；冻结源 330/330 匹配 |
+| Python runtime 与资源 | 宿主中立基础已完成 | 项目定位、`.codex` pointer、参考资料来源和旧 `.claude` 只读 fallback 已统一；Story System 与小说数据合同未改 |
 | Codex hooks | 协议初适配 | 已覆盖非小说项目静默和常见绕过载荷，仍需真实安装/信任 smoke；hook 不是完整安全边界 |
 | 8 个业务 Skills | 未开放 | Claude Code 专用表达尚未逐项改写，避免把未适配能力伪装成可用 |
 | 4 个专用 Agents | 设计已映射 | Codex 插件分发与项目级自定义 Agent 需要分层处理 |
@@ -42,10 +45,14 @@ Codex Skill / subagent / hook
 
 ```powershell
 python -X utf8 scripts/validate_codex_adapter.py --format json
+python -X utf8 scripts/validate_plugin_package.py --strict --format json
+python -X utf8 scripts/sync_plugin_version.py --check --expected-version 0.1.0
+$UpstreamRoot = "PATH_TO_LOCAL_UPSTREAM_CHECKOUT"
+python -X utf8 scripts/upstream_sync.py check --source-root $UpstreamRoot --sha 2041abad78211e29a67a2f0c64b2a97a747dce57 --format json
 python -X utf8 -m pytest scripts/tests/test_hooks.py -q -o addopts='' -p scripts.pytest_bootstrap -p pytest_asyncio.plugin -p pytest_timeout -p no:cacheprovider --strict-markers --timeout=30 --timeout-method=thread
 ```
 
-M1 隔离已验收。所有 pytest 运行必须通过隔离 runner，或像上面的定向命令一样显式加载 bootstrap；不要直接执行原始 `pytest`。`full` 表示当前 Codex 有效全集，不会执行冻结的 Claude 契约：
+M1 隔离与 M2 宿主中立 gate 已验收。所有 pytest 运行必须通过隔离 runner，或像上面的定向命令一样显式加载 bootstrap；不要直接执行原始 `pytest`。`full` 表示当前 Codex 有效全集，不会执行冻结的 Claude 契约：
 
 ```powershell
 powershell -NoProfile -File scripts/run_tests.ps1 -Mode smoke
