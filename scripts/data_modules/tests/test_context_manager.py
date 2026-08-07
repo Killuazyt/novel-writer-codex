@@ -500,6 +500,17 @@ def test_context_manager_genre_section_and_refs_extraction(temp_project):
     assert "钩子强度" in profile["taxonomy_excerpt"]
     assert isinstance(profile["reference_hints"], list)
     assert profile["reference_hints"]
+    assert profile["reference_compatibility_mode"] == "legacy_read_only"
+    assert (
+        profile["reference_sources"]["genre_profiles"]["resolved_from"]
+        == "legacy_project"
+    )
+    assert (
+        profile["reference_sources"]["reading_power_taxonomy"][
+            "compatibility_mode"
+        ]
+        == "legacy_read_only"
+    )
 
     fallback_excerpt = manager._extract_genre_section("## a\n1\n## b\n2", "unknown")
     assert fallback_excerpt.startswith("## a")

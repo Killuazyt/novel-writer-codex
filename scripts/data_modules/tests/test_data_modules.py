@@ -34,7 +34,6 @@ from data_modules.index_manager import (
     ReviewMetrics,
     WritingChecklistScoreMeta,
 )
-from project_locator import write_current_project_pointer
 
 
 @pytest.fixture
@@ -1345,13 +1344,10 @@ class TestIndexManager:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         (workspace / ".git").mkdir()
-        (workspace / ".claude").mkdir()
         project_root = workspace / "book"
         config = DataModulesConfig.from_project_root(project_root)
         config.ensure_dirs()
         _ensure_project_state(config)
-        write_current_project_pointer(project_root, workspace_root=workspace)
-
         entities = project_root / "entities.json"
         outside_scenes = workspace / "scenes.json"
         entities.write_text("[]", encoding="utf-8")
@@ -1363,7 +1359,7 @@ class TestIndexManager:
             [
                 "index_manager",
                 "--project-root",
-                str(workspace),
+                str(project_root),
                 "process-chapter",
                 "--chapter",
                 "2",

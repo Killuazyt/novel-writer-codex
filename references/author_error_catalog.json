@@ -11,8 +11,8 @@
       "title": "这本书的写作档案还没就绪",
       "reason": "系统还没有拿到继续写作所需的 Story System 主链资料。",
       "impact": "继续写章可能会用旧资料或缺少本章写作要求。",
-      "next_action": "先运行 `/webnovel-init` 创建项目档案；如果已经初始化过，再运行 `/webnovel-doctor` 查缺项。",
-      "command": "/webnovel-doctor",
+      "next_action": "先运行 `$webnovel-init` 创建项目档案；如果已经初始化过，再运行 `$webnovel-doctor` 查缺项。",
+      "command": "$webnovel-doctor",
       "auto_handle": false
     },
     {
@@ -26,7 +26,7 @@
       "reason": "系统在写前、提交前或提交后检查时发现阻断问题。",
       "impact": "当前章节不能可靠进入下一步。",
       "next_action": "按报告里的影响和修复建议处理后，重新运行同一条写作命令。",
-      "command": "/webnovel-doctor",
+      "command": "$webnovel-doctor",
       "auto_handle": false
     },
     {
@@ -40,7 +40,7 @@
       "reason": "本章仍有未覆盖节点、待确认歧义或阻断审查问题。",
       "impact": "本章不会被当作已正式写入故事主链，后续章节不能直接依赖它。",
       "next_action": "先修复 missed_nodes、pending 或 blocking 问题，再重新提交本章事实。",
-      "command": "/webnovel-doctor",
+      "command": "$webnovel-doctor",
       "auto_handle": false
     },
     {
@@ -53,8 +53,8 @@
       "title": "中间结果格式不完整",
       "reason": "某个检查或资料整理结果缺少必要字段。",
       "impact": "系统无法确认本章事实是否完整，不能继续提交。",
-      "next_action": "重新运行产生该中间结果的步骤；如果仍失败，运行 `/webnovel-doctor` 并附日志反馈。",
-      "command": "/webnovel-doctor",
+      "next_action": "重新运行产生该中间结果的步骤；如果仍失败，运行 `$webnovel-doctor` 并附日志反馈。",
+      "command": "$webnovel-doctor",
       "auto_handle": false
     },
     {
@@ -68,7 +68,7 @@
       "reason": "写作检查、目标完成情况或故事事实提取结果没有生成。",
       "impact": "系统无法安全保存本章事实。",
       "next_action": "重新运行同一条主命令，让系统从缺失步骤继续。",
-      "command": "/webnovel-doctor",
+      "command": "$webnovel-doctor",
       "auto_handle": false
     },
     {
@@ -81,8 +81,8 @@
       "title": "故事资料更新失败",
       "reason": "本章事实已生成，但同步到状态、摘要、长期记忆或检索库时失败。",
       "impact": "后续查询可能读不到本章最新变化。",
-      "next_action": "修复失败原因后补跑资料更新；也可以先运行 `/webnovel-doctor` 查看具体卡点。",
-      "command": "/webnovel-doctor",
+      "next_action": "修复失败原因后补跑资料更新；也可以先运行 `$webnovel-doctor` 查看具体卡点。",
+      "command": "$webnovel-doctor",
       "auto_handle": true
     },
     {
@@ -95,8 +95,8 @@
       "title": "故事资料还没更新完成",
       "reason": "本章事实同步到各处的状态仍在等待或缺少记录。",
       "impact": "后续查询可能暂时不完整。",
-      "next_action": "等待或补跑资料更新；如果反复出现，运行 `/webnovel-doctor`。",
-      "command": "/webnovel-doctor",
+      "next_action": "等待或补跑资料更新；如果反复出现，运行 `$webnovel-doctor`。",
+      "command": "$webnovel-doctor",
       "auto_handle": true
     },
     {
@@ -110,7 +110,7 @@
       "reason": "向量检索不可用或响应失败，系统改用较简单的读取方式。",
       "impact": "当前流程可以继续，但召回资料可能不如平时完整。",
       "next_action": "本次无需处理；如果经常出现，检查 RAG API key 和网络配置。",
-      "command": "/webnovel-doctor",
+      "command": "$webnovel-doctor",
       "auto_handle": true
     }
   ],
@@ -119,8 +119,8 @@
     "title": "遇到未登记的问题",
     "reason": "这里遇到一个系统还没有登记过的问题。",
     "impact": "当前不会把它当成已完成。",
-    "next_action": "请先运行 `/webnovel-doctor`，或反馈时附上 `.webnovel/logs/run_last.log`。",
-    "command": "/webnovel-doctor",
+    "next_action": "请先运行 `$webnovel-doctor`，或反馈时附上 `.webnovel/logs/run_last.log`。",
+    "command": "$webnovel-doctor",
     "auto_handle": false
   }
 }

@@ -62,4 +62,4 @@ def test_error_catalog_unknown_error_honestly_falls_back():
 
     assert result.matched is False
     assert result.code == "unknown"
-    assert "/webnovel-doctor" in result.next_action
+    assert "$webnovel-doctor" in result.next_action

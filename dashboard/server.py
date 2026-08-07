@@ -3,41 +3,32 @@ Dashboard 启动脚本
 
 用法：
     python -m dashboard.server --project-root /path/to/novel-project
-    python -m dashboard.server                   # 自动从 .claude 指针读取
+    python -m dashboard.server                   # 使用统一项目定位
 """
 
 import argparse
-import os
 import sys
 import webbrowser
 from pathlib import Path
 
 
+def _shared_resolver():
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
+    scripts_entry = str(scripts_dir)
+    if scripts_entry not in sys.path:
+        sys.path.insert(0, scripts_entry)
+    from project_locator import resolve_project_root
+
+    return resolve_project_root
+
+
 def _resolve_project_root(cli_root: str | None) -> Path:
-    """按优先级解析 PROJECT_ROOT：CLI > 环境变量 > .claude 指针 > CWD。"""
-    if cli_root:
-        return Path(cli_root).resolve()
-
-    env = os.environ.get("WEBNOVEL_PROJECT_ROOT")
-    if env:
-        return Path(env).resolve()
-
-    # 尝试从 .claude 指针读取
-    cwd = Path.cwd()
-    pointer = cwd / ".claude" / ".webnovel-current-project"
-    if pointer.is_file():
-        target = pointer.read_text(encoding="utf-8").strip()
-        if target:
-            p = Path(target)
-            if p.is_dir() and (p / ".webnovel" / "state.json").is_file():
-                return p.resolve()
-
-    # 最终兜底：当前目录
-    if (cwd / ".webnovel" / "state.json").is_file():
-        return cwd.resolve()
-
-    print("ERROR: 无法定位 PROJECT_ROOT（需要包含 .webnovel/state.json 的目录）", file=sys.stderr)
-    sys.exit(1)
+    """Use the same strict resolver as every runtime command."""
+    try:
+        return _shared_resolver()(cli_root)
+    except FileNotFoundError as exc:
+        print(f"ERROR: 无法定位 PROJECT_ROOT（需要包含 .webnovel/state.json 的目录）: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def main():

@@ -600,7 +600,7 @@ def test_user_report_rendering_covers_empty_failed_and_timed_report() -> None:
 
     report["next_actions"] = []
     text = user_report.format_user_report(report)
-    assert "/webnovel-doctor" in text
+    assert "$webnovel-doctor" in text
     encoded = user_report.format_user_report(report, "json")
     assert json.loads(encoded)["overall_status"] == user_report.STATUS_FAILED
 

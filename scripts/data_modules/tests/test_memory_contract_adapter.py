@@ -352,6 +352,11 @@ class TestLoadContext:
         pack = adapter.load_context(1)
 
         assert "规则优先" in pack.sections["genre_profile_excerpt"]
+        assert pack.sections["genre_profile_source"]["resolved_from"] == "legacy_project"
+        assert (
+            pack.sections["genre_profile_source"]["compatibility_mode"]
+            == "legacy_read_only"
+        )
 
     def test_load_context_prefers_actual_latest_commit_status(self, tmp_path):
         cfg = _make_project(tmp_path)

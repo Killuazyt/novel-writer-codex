@@ -30,6 +30,10 @@ def test_init_skips_dead_templates_and_empty_libraries_for_single_protagonist(tm
     assert not (project_root / "设定集" / "角色库").exists()
     assert not (project_root / "设定集" / "物品库").exists()
     assert not (project_root / "设定集" / "其他设定").exists()
+    pointer = project_root / ".codex" / ".webnovel-current-project"
+    assert pointer.read_text(encoding="utf-8").strip() == str(project_root.resolve())
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".codex").exists()
 
 
 def test_init_master_outline_does_not_prefill_future_volume_rows(tmp_path, monkeypatch):
@@ -119,6 +123,24 @@ def test_init_rejects_english_profile_key_before_writing_state(tmp_path, monkeyp
     assert "rules-mystery" in message
     assert "规则怪谈" in message
     assert not (project_root / ".webnovel" / "state.json").exists()
+
+
+def test_init_rejects_project_inside_codex_state(tmp_path, monkeypatch):
+    import init_project as init_project_module
+
+    monkeypatch.setattr(init_project_module, "is_git_available", lambda: False)
+    project_root = tmp_path / ".codex" / "book"
+
+    with pytest.raises(SystemExit, match=r"\.claude or \.codex"):
+        init_project_module.init_project(
+            str(project_root),
+            title="测试书",
+            genre="仙侠",
+            protagonist_name="陆鸣",
+            target_chapters=50,
+        )
+
+    assert not project_root.exists()
 
 
 def test_init_preserves_corrupt_state_json_before_rebuilding(tmp_path, monkeypatch, capsys):

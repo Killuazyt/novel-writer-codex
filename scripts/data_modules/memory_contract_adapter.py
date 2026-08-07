@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from host_paths import resolve_reference_file
+
 from .chapter_commit_service import ChapterCommitService
 from .commit_artifacts import extraction_list
 from .config import DataModulesConfig, get_config
@@ -241,18 +243,23 @@ class MemoryContractAdapter:
                     or project_info.get("genre_label")
                     or legacy_project.get("genre")
                     or ""
-                ).strip()
+            ).strip()
             if genre:
-                profile_path = self.config.project_root / ".claude" / "references" / "genre-profiles.md"
-                if profile_path.exists():
-                    profile_text = profile_path.read_text(encoding="utf-8")
+                profile_resolution = resolve_reference_file(
+                    self.config.project_root,
+                    "genre-profiles.md",
+                    anchor=__file__,
+                )
+                if profile_resolution:
+                    profile_text = profile_resolution.path.read_text(encoding="utf-8")
                     excerpt = extract_genre_section(profile_text, genre)
                     if excerpt:
                         sections["genre_profile_excerpt"] = excerpt
+                        sections["genre_profile_source"] = profile_resolution.as_dict()
         except Exception as e:
             logger.warning("load_context: genre_profile_excerpt failed: %s", e)
 
-        # 8. 作者文风记忆（/webnovel-learn 写入的 project_memory.json）
+        # 8. 作者文风记忆（$webnovel-learn 写入的 project_memory.json）
         try:
             patterns = self._load_author_style_patterns()
             if patterns:

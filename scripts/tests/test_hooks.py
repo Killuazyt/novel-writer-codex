@@ -214,3 +214,32 @@ def test_session_start_is_silent_outside_webnovel_project(tmp_path):
 
     assert proc.returncode == 0
     assert proc.stdout == ""
+
+
+def test_session_start_resolves_codex_workspace_pointer(tmp_path):
+    workspace = tmp_path / "工作区 (A&B)"
+    project_root = tmp_path / "小说😀"
+    (workspace / ".codex").mkdir(parents=True)
+    (project_root / ".webnovel").mkdir(parents=True)
+    (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+    (workspace / ".codex" / ".webnovel-current-project").write_text(
+        str(project_root.resolve()), encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env.pop("WEBNOVEL_DISABLE_SESSION_STATUS_HOOK", None)
+    env.pop("WEBNOVEL_PROJECT_ROOT", None)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    env["WEBNOVEL_HOME"] = str(tmp_path / "webnovel-home")
+    env["WEBNOVEL_CLAUDE_HOME"] = str(tmp_path / "legacy-home")
+
+    proc = subprocess.run(
+        [sys.executable, str(SESSION_START)],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert proc.returncode == 0
+    assert proc.stdout.strip()

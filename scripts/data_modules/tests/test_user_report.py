@@ -146,7 +146,7 @@ def test_render_write_report_success(tmp_path: Path) -> None:
     assert report["stage"] == "write"
     assert any(item["label"] == "正文" and item["status"] == "completed" for item in report["files"])
     assert not report["issues"]["must_handle"]
-    assert "/webnovel-write 2" in text
+    assert "$webnovel-write 2" in text
     assert "总状态：已完成。" in text
     assert "一、产生的文件与完成情况" in text
     assert "二、过程中遇到的问题与异常耗时" in text

@@ -141,7 +141,7 @@ def _file_checks(project_root: Path, snapshot: ProjectPhaseSnapshot) -> list[dic
                 expected="directory exists",
                 actual="exists" if exists else "missing",
                 impact="" if exists else "项目骨架不完整，后续写作/备份/报告可能写入失败。",
-                repair="" if exists else "重新运行 /webnovel-init，或手动创建该目录后再运行 doctor。",
+                repair="" if exists else "重新运行 $webnovel-init，或手动创建该目录后再运行 doctor。",
             )
         )
     for rel in INIT_REQUIRED_FILES:
@@ -157,7 +157,7 @@ def _file_checks(project_root: Path, snapshot: ProjectPhaseSnapshot) -> list[dic
                 expected="file exists",
                 actual="exists" if exists else "missing",
                 impact="" if exists else "项目初始化产物缺失，当前阶段判断和后续流程会不可靠。",
-                repair="" if exists else "使用 /webnovel-init 补齐项目骨架，或按 init_project.py 模板补齐文件。",
+                repair="" if exists else "使用 $webnovel-init 补齐项目骨架，或按 init_project.py 模板补齐文件。",
             )
         )
 
@@ -470,7 +470,7 @@ def build_doctor_report(
                 expected=".webnovel/state.json",
                 actual="missing",
                 impact="无法判断项目状态，也不能安全运行写作链路。",
-                repair="先运行 /webnovel-init，或运行 webnovel.py use <project_root> 绑定已有项目。",
+                repair="先运行 $webnovel-init，或运行 webnovel.py use <project_root> 绑定已有项目。",
             )
         )
     else:

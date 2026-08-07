@@ -502,7 +502,7 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
             reason="没有找到本章正文文件。",
             impact="当前章节不能提交为故事事实。",
             next_action="重新运行同一条写章命令，让系统从正文步骤继续。",
-            command=f"/webnovel-write {chapter}",
+            command=f"$webnovel-write {chapter}",
             path="正文",
         )
 
@@ -537,8 +537,8 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
             title="写作检查已按 minimal 模式跳过",
             reason="本轮写章使用了 no-review artifact，未经过完整 reviewer 审查。",
             impact="正文可以继续保存，但质量风险需要你自行决定是否接受。",
-            next_action="如果想补审，运行 `/webnovel-review` 查看本章问题。",
-            command="/webnovel-review",
+            next_action="如果想补审，运行 `$webnovel-review` 查看本章问题。",
+            command="$webnovel-review",
             source="review_result",
             path=COMMIT_ARTIFACT_FILES[0],
         )
@@ -574,8 +574,8 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
                 title="本章事实提交状态不明确",
                 reason=f"commit 状态是 `{status or 'missing'}`，不是 accepted。",
                 impact="系统不能确认本章是否已正式进入故事主链。",
-                next_action="运行 `/webnovel-doctor` 查看详情，必要时重新提交本章事实。",
-                command="/webnovel-doctor",
+                next_action="运行 `$webnovel-doctor` 查看详情，必要时重新提交本章事实。",
+                command="$webnovel-doctor",
                 source="chapter_commit",
                 path=_rel(project_root, commit_path),
             )
@@ -599,7 +599,7 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
             reason="没有在 `.webnovel/backups` 找到本章备份证据。",
             impact="本章事实已生成，但回滚保障需要再确认。",
             next_action="运行备份命令或重新执行写章收尾步骤。",
-            command=f"/webnovel-write {chapter}",
+            command=f"$webnovel-write {chapter}",
             source="backup",
             path=backup_path,
         )
@@ -610,7 +610,7 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
             {
                 "label": "写下一章",
                 "description": f"可以继续写第 {chapter + 1} 章。",
-                "command": f"/webnovel-write {chapter + 1}",
+                "command": f"$webnovel-write {chapter + 1}",
             }
         )
     elif report["issues"]["must_handle"]:
@@ -618,7 +618,7 @@ def build_write_report(project_root: Path, *, chapter: int, volume: int | None =
             {
                 "label": "先处理阻断项",
                 "description": "先处理“必须处理”里的问题，再重新运行同一条写章命令。",
-                "command": f"/webnovel-write {chapter}",
+                "command": f"$webnovel-write {chapter}",
             }
         )
     else:
@@ -660,7 +660,7 @@ def build_review_report(project_root: Path, *, chapter: int, volume: int | None 
                 reason=f"本章有 {blocking_count} 个 blocking 问题。",
                 impact="不处理会影响继续写作、提交或事实一致性。",
                 next_action="先按审查报告处理阻断问题；如果要保留当前版本，需要用户明确裁决。",
-                command="/webnovel-review",
+                command="$webnovel-review",
                 source="review",
                 path=_rel(project_root, review_path),
             )
@@ -677,7 +677,7 @@ def build_review_report(project_root: Path, *, chapter: int, volume: int | None 
             reason="没有找到 `.webnovel/tmp/review_metrics.json`。",
             impact="审查正文可读，但 dashboard 或趋势统计可能缺少本章记录。",
             next_action="重新运行审查流程并保存 metrics。",
-            command="/webnovel-review",
+            command="$webnovel-review",
             source="review",
             path=_rel(project_root, metrics_path),
         )
@@ -701,7 +701,7 @@ def build_review_report(project_root: Path, *, chapter: int, volume: int | None 
                 reason="没有找到面向阅读的审查报告 Markdown 文件。",
                 impact="审查 JSON 仍可用，但你不方便直接阅读修改建议。",
                 next_action="重新运行审查流程并指定 report file。",
-                command="/webnovel-review",
+                command="$webnovel-review",
                 source="review",
                 path="审查报告",
             )
@@ -712,7 +712,7 @@ def build_review_report(project_root: Path, *, chapter: int, volume: int | None 
             {
                 "label": "处理审查问题",
                 "description": "先处理审查报告中的阻断问题，再继续写作或提交。",
-                "command": "/webnovel-review",
+                "command": "$webnovel-review",
             }
         )
     else:
@@ -720,7 +720,7 @@ def build_review_report(project_root: Path, *, chapter: int, volume: int | None 
             {
                 "label": "继续写作",
                 "description": f"如果本章已满意，可以继续写第 {chapter + 1} 章。",
-                "command": f"/webnovel-write {chapter + 1}",
+                "command": f"$webnovel-write {chapter + 1}",
             }
         )
     return report
@@ -868,7 +868,7 @@ def render_user_report_text(report: dict[str, Any]) -> str:
             else:
                 lines.append(f"- {description}")
     else:
-        lines.append("- 暂无下一步建议；可以运行 `/webnovel-doctor` 查看项目状态。")
+        lines.append("- 暂无下一步建议；可以运行 `$webnovel-doctor` 查看项目状态。")
     return "\n".join(lines).rstrip() + "\n"
 
 

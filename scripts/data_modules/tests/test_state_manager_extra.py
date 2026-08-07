@@ -13,7 +13,6 @@ import pytest
 
 from data_modules.state_manager import StateManager, EntityState
 from data_modules.index_manager import IndexManager, EntityMeta
-from project_locator import write_current_project_pointer
 
 
 @pytest.fixture
@@ -661,14 +660,11 @@ def test_state_manager_cli_rejects_json_file_outside_resolved_book_root(tmp_path
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / ".git").mkdir()
-    (workspace / ".claude").mkdir()
     project_root = workspace / "book"
     cfg = DataModulesConfig.from_project_root(project_root)
     cfg.ensure_dirs()
     if not cfg.state_file.exists():
         cfg.state_file.write_text("{}", encoding="utf-8")
-    write_current_project_pointer(project_root, workspace_root=workspace)
-
     outside = workspace / "outside.json"
     outside.write_text('{"entities_appeared": []}', encoding="utf-8")
 
@@ -678,7 +674,7 @@ def test_state_manager_cli_rejects_json_file_outside_resolved_book_root(tmp_path
         [
             "state_manager",
             "--project-root",
-            str(workspace),
+            str(project_root),
             "process-chapter",
             "--chapter",
             "1",

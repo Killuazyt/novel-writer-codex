@@ -11,6 +11,7 @@ import sys
 import logging
 from pathlib import Path
 
+from host_paths import resolve_reference_file
 from runtime_compat import enable_windows_utf8_stdio
 from typing import Any, Dict, List, Optional
 
@@ -334,11 +335,27 @@ class ContextManager:
         primary_genre = genres[0]
         secondary_genres = genres[1:]
         composite = len(genres) > 1
-        profile_path = self.config.project_root / ".claude" / "references" / "genre-profiles.md"
-        taxonomy_path = self.config.project_root / ".claude" / "references" / "reading-power-taxonomy.md"
+        profile_resolution = resolve_reference_file(
+            self.config.project_root,
+            "genre-profiles.md",
+            anchor=__file__,
+        )
+        taxonomy_resolution = resolve_reference_file(
+            self.config.project_root,
+            "reading-power-taxonomy.md",
+            anchor=__file__,
+        )
 
-        profile_text = profile_path.read_text(encoding="utf-8") if profile_path.exists() else ""
-        taxonomy_text = taxonomy_path.read_text(encoding="utf-8") if taxonomy_path.exists() else ""
+        profile_text = (
+            profile_resolution.path.read_text(encoding="utf-8")
+            if profile_resolution
+            else ""
+        )
+        taxonomy_text = (
+            taxonomy_resolution.path.read_text(encoding="utf-8")
+            if taxonomy_resolution
+            else ""
+        )
 
         profile_excerpt = self._extract_genre_section(profile_text, primary_genre)
         taxonomy_excerpt = self._extract_genre_section(taxonomy_text, primary_genre)
@@ -368,6 +385,23 @@ class ContextManager:
             "secondary_taxonomy_excerpts": secondary_taxonomies,
             "reference_hints": refs,
             "composite_hints": composite_hints,
+            "reference_sources": {
+                "genre_profiles": (
+                    profile_resolution.as_dict() if profile_resolution else None
+                ),
+                "reading_power_taxonomy": (
+                    taxonomy_resolution.as_dict() if taxonomy_resolution else None
+                ),
+            },
+            "reference_compatibility_mode": (
+                "legacy_read_only"
+                if any(
+                    resolution
+                    and resolution.compatibility_mode == "legacy_read_only"
+                    for resolution in (profile_resolution, taxonomy_resolution)
+                )
+                else "native"
+            ),
         }
 
     def _build_runtime_genre_profile(

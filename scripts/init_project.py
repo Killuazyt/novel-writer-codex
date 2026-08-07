@@ -6,10 +6,10 @@
 目标：
 - 生成可运行的项目结构（webnovel-project）
 - 创建/更新 .webnovel/state.json（初始化配置与兼容读模型）
-- 生成基础设定集与大纲模板文件（供 /webnovel-plan 与 /webnovel-write 使用）
+- 生成基础设定集与大纲模板文件（供 $webnovel-plan 与 $webnovel-write 使用）
 
 说明：
-- 该脚本是命令 /webnovel-init 的“唯一允许的文件生成入口”（与命令文档保持一致）。
+- 该脚本是命令 $webnovel-init 的“唯一允许的文件生成入口”（与命令文档保持一致）。
 - 生成的内容以“模板骨架”为主，便于 AI/作者后续补全；但保证所有关键文件存在。
 """
 
@@ -29,7 +29,7 @@ import re
 
 # 安全修复：导入安全工具函数
 from security_utils import sanitize_commit_message, atomic_write_json, is_git_available
-from project_locator import write_current_project_pointer
+from project_locator import bind_current_project
 from genre_taxonomy import resolve_genre_input, resolve_template_stems
 
 
@@ -186,7 +186,7 @@ def _build_master_outline(target_chapters: int, *, chapters_per_volume: int = 50
     lines: list[str] = [
         "# 总纲",
         "",
-        "> 本文件为“总纲骨架”，用于 /webnovel-plan 细化为卷大纲与章纲。",
+        "> 本文件为“总纲骨架”，用于 $webnovel-plan 细化为卷大纲与章纲。",
         "",
         "## 卷结构",
         "",
@@ -270,8 +270,8 @@ def init_project(
     cultivation_subtiers: str = "",
 ) -> None:
     project_path = Path(project_dir).expanduser().resolve()
-    if ".claude" in project_path.parts:
-        raise SystemExit("Refusing to initialize a project inside .claude. Choose a different directory.")
+    if any(part in {".claude", ".codex"} for part in project_path.parts):
+        raise SystemExit("Refusing to initialize a project inside .claude or .codex. Choose a different directory.")
     genre = _validate_initial_genre_source(genre)
     genre_resolution = resolve_genre_input(genre)
     canonical_genre = genre_resolution.canonical_genre or genre
@@ -684,9 +684,11 @@ __pycache__/
 
     # 记录工作区默认项目指针（非阻断）
     try:
-        pointer_file = write_current_project_pointer(project_path)
-        if pointer_file is not None:
-            print(f"Default project pointer updated: {pointer_file}")
+        binding = bind_current_project(project_path, workspace_root=project_path)
+        if binding.pointer_path is not None:
+            print(f"Default project pointer updated: {binding.pointer_path}")
+        if binding.registry_path is not None:
+            print(f"Default project registry updated: {binding.registry_path}")
     except Exception as e:
         print(f"Default project pointer update failed (non-fatal): {e}")
 

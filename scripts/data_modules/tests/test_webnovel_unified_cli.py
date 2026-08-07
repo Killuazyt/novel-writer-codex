@@ -131,7 +131,7 @@ def test_extract_context_forwards_with_resolved_project_root(monkeypatch, tmp_pa
     ]
 
 
-def test_backup_forwards_resolved_book_root_from_parent_workspace(monkeypatch, tmp_path):
+def test_backup_forwards_explicit_book_root(monkeypatch, tmp_path):
     module = _load_webnovel_module()
 
     workspace_root = (tmp_path / "workspace").resolve()
@@ -155,7 +155,7 @@ def test_backup_forwards_resolved_book_root_from_parent_workspace(monkeypatch, t
         [
             "webnovel",
             "--project-root",
-            str(workspace_root),
+            str(book_root),
             "backup",
             "--chapter",
             "2",
@@ -673,6 +673,120 @@ def test_where_reports_empty_workspace_without_traceback(monkeypatch, tmp_path, 
     assert "Traceback" not in captured.err
 
 
+def test_where_json_reports_stable_resolution_fields(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    project_root = tmp_path / "中文 空格 (A&B)"
+    (project_root / ".webnovel").mkdir(parents=True)
+    (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.chdir(project_root)
+    monkeypatch.delenv("WEBNOVEL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["webnovel", "where", "--format", "json"])
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert int(exc.value.code or 0) == 0
+    assert report == {
+        "schema_version": 1,
+        "project_root": str(project_root.resolve()),
+        "resolved_from": "cwd",
+        "compatibility_mode": "native",
+    }
+
+
+def test_where_invalid_explicit_root_is_input_error(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    invalid_root = tmp_path / "workspace-not-book"
+    invalid_root.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["webnovel", "--project-root", str(invalid_root), "where"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    captured = capsys.readouterr()
+    assert int(exc.value.code or 0) == 2
+    assert "有效书项目根目录" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_where_empty_explicit_root_is_input_error_without_cwd_fallback(
+    monkeypatch, tmp_path, capsys
+):
+    module = _load_webnovel_module()
+    (tmp_path / ".webnovel").mkdir()
+    (tmp_path / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["webnovel", "--project-root", "", "where"])
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    captured = capsys.readouterr()
+    assert int(exc.value.code or 0) == 2
+    assert "有效书项目根目录" in captured.err
+    assert "Explicit project root is empty" in captured.err
+    assert captured.out == ""
+    assert "Traceback" not in captured.err
+
+
+def test_use_binds_confirmed_current_workspace_once(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    import project_locator as locator
+
+    monkeypatch.setattr(locator, "_find_plugin_root", lambda _start: None)
+    workspace = tmp_path / "中文 Workspace (A&B)"
+    project_root = workspace / "书😀"
+    (project_root / ".webnovel").mkdir(parents=True)
+    (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    real_bind = module.bind_current_project
+    calls = []
+
+    def counting_bind(project_root, *, workspace_root):
+        calls.append((project_root, workspace_root))
+        return real_bind(project_root, workspace_root=workspace_root)
+
+    monkeypatch.setattr(module, "bind_current_project", counting_bind)
+    monkeypatch.setattr(sys, "argv", ["webnovel", "use", str(project_root)])
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert int(exc.value.code or 0) == 0
+    assert len(calls) == 1
+    assert calls[0][1] == workspace.resolve()
+    assert (workspace / ".codex" / ".webnovel-current-project").is_file()
+    assert "workspace pointer" in capsys.readouterr().out
+
+
+def test_use_rejects_unconfirmed_workspace_without_writing(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    import project_locator as locator
+
+    monkeypatch.setattr(locator, "_find_plugin_root", lambda _start: None)
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    project_root = tmp_path / "books" / "book"
+    (project_root / ".webnovel").mkdir(parents=True)
+    (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(unrelated)
+    monkeypatch.setattr(sys, "argv", ["webnovel", "use", str(project_root)])
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    captured = capsys.readouterr()
+    assert int(exc.value.code or 0) == 2
+    assert "--workspace-root" in captured.err
+    assert not (unrelated / ".codex").exists()
+
+
 def test_preflight_reports_empty_workspace_without_traceback(monkeypatch, tmp_path, capsys):
     module = _load_webnovel_module()
     workspace = tmp_path / "workspace"
@@ -696,15 +810,12 @@ def test_preflight_reports_empty_workspace_without_traceback(monkeypatch, tmp_pa
     assert "Traceback" not in captured.err
 
 
-def test_quality_trend_report_writes_to_book_root_when_input_is_workspace_root(tmp_path, monkeypatch):
+def test_quality_trend_report_writes_to_explicit_book_root(tmp_path, monkeypatch):
     _ensure_scripts_on_path()
     import quality_trend_report as quality_trend_report_module
 
     workspace_root = (tmp_path / "workspace").resolve()
     book_root = (workspace_root / "凡人资本论").resolve()
-
-    (workspace_root / ".claude").mkdir(parents=True, exist_ok=True)
-    (workspace_root / ".claude" / ".webnovel-current-project").write_text(str(book_root), encoding="utf-8")
 
     (book_root / ".webnovel").mkdir(parents=True, exist_ok=True)
     (book_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
@@ -717,7 +828,7 @@ def test_quality_trend_report_writes_to_book_root_when_input_is_workspace_root(t
         [
             "quality_trend_report",
             "--project-root",
-            str(workspace_root),
+            str(book_root),
             "--limit",
             "1",
             "--output",

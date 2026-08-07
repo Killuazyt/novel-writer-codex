@@ -4,8 +4,7 @@ Project location helpers for webnovel-writer scripts.
 
 Problem this solves:
 - Many scripts assumed CWD is the project root and used relative paths like `.webnovel/state.json`.
-- In this repo, commands/scripts are often invoked from the repo root, while the actual project lives
-  in a subdirectory (default: `webnovel-project/`).
+- Commands may be invoked from a workspace, a nested project directory, or an installed plugin.
 
 These helpers provide a single, consistent way to locate the active project root.
 """
@@ -14,31 +13,60 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Literal, Optional
 
 from host_paths import resolve_legacy_claude_home, resolve_webnovel_home
 from runtime_compat import normalize_windows_path
 
 
-DEFAULT_PROJECT_DIR_NAMES: tuple[str, ...] = ("webnovel-project",)
-CURRENT_PROJECT_POINTER_REL: Path = Path(".claude") / ".webnovel-current-project"
+CODEX_CURRENT_PROJECT_POINTER_REL: Path = Path(".codex") / ".webnovel-current-project"
+LEGACY_CURRENT_PROJECT_POINTER_REL: Path = Path(".claude") / ".webnovel-current-project"
 
 # Codex 原生 registry 是唯一可写位置；Claude registry 仅用于只读兼容。
 NATIVE_REGISTRY_FILENAME = "workspaces.json"
 LEGACY_GLOBAL_REGISTRY_REL: Path = Path("webnovel-writer") / "workspaces.json"
 
-# Claude Code 常见环境变量（存在时优先作为“工作区根目录”提示）
+# Claude Code 兼容环境变量（仅用于 legacy 读取 fallback）
 ENV_CLAUDE_PROJECT_DIR = "CLAUDE_PROJECT_DIR"
 
 
-def _find_git_root(cwd: Path) -> Optional[Path]:
-    """Return nearest git root for cwd, if any."""
-    for candidate in (cwd, *cwd.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    return None
+ResolutionSource = Literal[
+    "cli",
+    "env",
+    "cwd",
+    "codex_pointer",
+    "codex_registry",
+    "legacy_pointer",
+    "legacy_registry",
+]
+CompatibilityMode = Literal["native", "legacy_read_only"]
+
+
+@dataclass(frozen=True)
+class ProjectResolution:
+    project_root: Path
+    resolved_from: ResolutionSource
+    compatibility_mode: CompatibilityMode = "native"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "project_root": str(self.project_root),
+            "resolved_from": self.resolved_from,
+            "compatibility_mode": self.compatibility_mode,
+        }
+
+
+@dataclass(frozen=True)
+class ProjectBindingResult:
+    project_root: Path
+    workspace_root: Path
+    pointer_path: Optional[Path]
+    registry_path: Optional[Path]
 
 
 def _now_iso() -> str:
@@ -114,43 +142,11 @@ def _save_global_registry(path: Path, data: dict) -> bool:
         return False
 
 
-def _resolve_project_root_from_global_registry(
-    base: Path,
-    *,
-    workspace_hint: Optional[Path] = None,
-    allow_last_used_fallback: bool = False,
-) -> Optional[Path]:
-    """
-    从用户级 registry 中解析 project_root。
-
-    安全策略：
-    - 优先使用 workspace_hint / CLAUDE_PROJECT_DIR 提示做匹配。
-    - 默认不使用 last_used 兜底，避免在“完全无上下文”时误命中错误项目。
-    """
-    paths = (_global_registry_path(), _legacy_global_registry_path())
-    seen: set[str] = set()
-    for reg_path in paths:
-        path_key = _normcase_path_key(reg_path)
-        if path_key in seen:
-            continue
-        seen.add(path_key)
-        resolved = _resolve_project_root_from_registry_path(
-            reg_path,
-            base,
-            workspace_hint=workspace_hint,
-            allow_last_used_fallback=allow_last_used_fallback,
-        )
-        if resolved is not None:
-            return resolved
-    return None
-
-
 def _resolve_project_root_from_registry_path(
     reg_path: Path,
     base: Path,
     *,
-    workspace_hint: Optional[Path],
-    allow_last_used_fallback: bool,
+    stop_at: Optional[Path] = None,
 ) -> Optional[Path]:
     """Resolve one registry without mutating or repairing it on disk."""
     reg = _load_global_registry(reg_path)
@@ -158,13 +154,8 @@ def _resolve_project_root_from_registry_path(
     if not isinstance(workspaces, dict) or not workspaces:
         return None
 
-    hints: list[Path] = []
-    env_ws = os.environ.get(ENV_CLAUDE_PROJECT_DIR)
-    if env_ws:
-        hints.append(normalize_windows_path(env_ws).expanduser())
-    if workspace_hint is not None:
-        hints.append(workspace_hint)
-    hints.append(base)
+    hints = [base]
+    boundary_key = _normcase_path_key(stop_at) if stop_at is not None else None
 
     # 1) 精确匹配
     for hint in hints:
@@ -188,7 +179,20 @@ def _resolve_project_root_from_registry_path(
             if not isinstance(ws_key, str) or not ws_key:
                 continue
             ws_key_norm = os.path.normcase(ws_key)
-            if hint_key == ws_key_norm or hint_key.startswith(ws_key_norm.rstrip("\\") + "\\"):
+            if boundary_key is not None:
+                try:
+                    inside_boundary = (
+                        os.path.commonpath((ws_key_norm, boundary_key)) == boundary_key
+                    )
+                except ValueError:
+                    inside_boundary = False
+                if not inside_boundary:
+                    continue
+            try:
+                contains_hint = os.path.commonpath((hint_key, ws_key_norm)) == ws_key_norm
+            except ValueError:
+                contains_hint = False
+            if contains_hint:
                 if len(ws_key_norm) > best_len:
                     best_key = ws_key
                     best_len = len(ws_key_norm)
@@ -200,14 +204,6 @@ def _resolve_project_root_from_registry_path(
                     target = normalize_windows_path(raw).expanduser()
                     if target.is_absolute() and _is_project_root(target):
                         return target.resolve()
-
-    # 3) last_used（可选，默认关闭）
-    if allow_last_used_fallback:
-        raw = reg.get("last_used_project_root")
-        if isinstance(raw, str) and raw.strip():
-            target = normalize_windows_path(raw).expanduser()
-            if target.is_absolute() and _is_project_root(target):
-                return target.resolve()
 
     return None
 
@@ -231,10 +227,6 @@ def update_global_registry_current_project(
         raise FileNotFoundError(f"Not a webnovel project root (missing .webnovel/state.json): {root}")
 
     ws = workspace_root
-    if ws is None:
-        env_ws = os.environ.get(ENV_CLAUDE_PROJECT_DIR)
-        if env_ws:
-            ws = normalize_windows_path(env_ws).expanduser()
     if ws is None:
         return None
 
@@ -262,15 +254,9 @@ def update_global_registry_current_project(
 
 
 def _candidate_roots(cwd: Path, *, stop_at: Optional[Path] = None) -> Iterable[Path]:
-    yield cwd
-    for name in DEFAULT_PROJECT_DIR_NAMES:
-        yield cwd / name
-
-    for parent in cwd.parents:
-        yield parent
-        for name in DEFAULT_PROJECT_DIR_NAMES:
-            yield parent / name
-        if stop_at is not None and parent == stop_at:
+    for candidate in (cwd, *cwd.parents):
+        yield candidate
+        if stop_at is not None and candidate == stop_at:
             break
 
 
@@ -278,178 +264,253 @@ def _is_project_root(path: Path) -> bool:
     return (path / ".webnovel" / "state.json").is_file()
 
 
-def _pointer_candidates(cwd: Path, *, stop_at: Optional[Path] = None) -> Iterable[Path]:
-    """Yield candidate pointer files from cwd up to parents (bounded by stop_at when provided)."""
+def _find_search_boundary(cwd: Path) -> Optional[Path]:
+    """Bound discovery at the nearest repository or installed plugin root."""
     for candidate in (cwd, *cwd.parents):
-        yield candidate / CURRENT_PROJECT_POINTER_REL
-        if stop_at is not None and candidate == stop_at:
-            break
-
-
-def _resolve_project_root_from_pointer(cwd: Path, *, stop_at: Optional[Path] = None) -> Optional[Path]:
-    """
-    Resolve project root from workspace pointer file.
-
-    Pointer file format:
-    - plain text absolute path, one line.
-    - relative path is also supported (resolved relative to pointer's `.claude/` dir).
-    """
-    for pointer_file in _pointer_candidates(cwd, stop_at=stop_at):
-        if not pointer_file.is_file():
-            continue
-        raw = pointer_file.read_text(encoding="utf-8").strip()
-        if not raw:
-            continue
-        target = normalize_windows_path(raw).expanduser()
-        if not target.is_absolute():
-            target = (pointer_file.parent / target).resolve()
-        if _is_project_root(target):
-            return target.resolve()
-    return None
-
-
-def _resolve_unique_child_project_root(root: Path) -> Optional[Path]:
-    """
-    Resolve a workspace root that contains exactly one direct child book project.
-
-    This supports commands invoked with a parent workspace path while keeping
-    ambiguous multi-book workspaces explicit.
-    """
-    try:
-        children = [child.resolve() for child in root.iterdir() if child.is_dir() and _is_project_root(child)]
-    except OSError:
-        return None
-    if len(children) == 1:
-        return children[0]
-    return None
-
-
-def _find_workspace_root_with_claude(start: Path) -> Optional[Path]:
-    """Find nearest ancestor containing `.claude/`."""
-    for candidate in (start, *start.parents):
-        if (candidate / ".claude").is_dir():
+        if (candidate / ".git").exists() or (candidate / ".codex-plugin" / "plugin.json").is_file():
             return candidate
     return None
 
 
-def write_current_project_pointer(project_root: Path, *, workspace_root: Optional[Path] = None) -> Optional[Path]:
-    """
-    Write workspace-level current project pointer and return pointer file path.
+def _find_plugin_root(start: Path) -> Optional[Path]:
+    for candidate in (start, *start.parents):
+        if (candidate / ".codex-plugin" / "plugin.json").is_file():
+            return candidate
+    return None
 
-    If no workspace root with `.claude/` can be found, returns None (non-fatal).
+
+def _pointer_candidates(
+    cwd: Path,
+    pointer_rel: Path,
+    *,
+    stop_at: Optional[Path] = None,
+) -> Iterable[Path]:
+    """Yield candidate pointer files from cwd up to parents (bounded by stop_at when provided)."""
+    for candidate in (cwd, *cwd.parents):
+        yield candidate / pointer_rel
+        if stop_at is not None and candidate == stop_at:
+            break
+
+
+def _resolve_project_root_from_pointer(
+    cwd: Path,
+    pointer_rel: Path,
+    *,
+    stop_at: Optional[Path] = None,
+    allow_pointer_dir_relative: bool = False,
+) -> Optional[Path]:
+    """Resolve an absolute or legacy relative workspace pointer without writing it."""
+    for pointer_file in _pointer_candidates(cwd, pointer_rel, stop_at=stop_at):
+        if not pointer_file.is_file():
+            continue
+        try:
+            raw = pointer_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+        if not raw:
+            continue
+        target = normalize_windows_path(raw).expanduser()
+        candidates = [target]
+        if not target.is_absolute():
+            # Native pointers are relative to the workspace.  Only legacy
+            # `.claude` pointers may also be relative to the pointer directory.
+            candidates = [pointer_file.parent.parent / target]
+            if allow_pointer_dir_relative:
+                candidates.append(pointer_file.parent / target)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                resolved = candidate
+            if _is_project_root(resolved):
+                return resolved
+    return None
+
+
+def confirm_current_workspace(
+    project_root: Path,
+    *,
+    cwd: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return a workspace only when the current directory proves the context.
+
+    A project parent is not inherently a workspace.  We accept the exact book
+    root, a directory inside that book (binding the book itself), or a current
+    workspace ancestor that contains the book.  Installed/plugin checkouts are
+    rejected unless the caller supplies an explicit workspace instead.
     """
+
+    project = normalize_windows_path(project_root).expanduser().resolve()
+    current = (cwd or Path.cwd()).expanduser().resolve()
+
+    plugin_root = _find_plugin_root(current)
+    if plugin_root is not None and plugin_root != project:
+        return None
+
+    if current == project or project in current.parents:
+        return project
+    try:
+        project.relative_to(current)
+    except ValueError:
+        return None
+    return current
+
+
+def _atomic_write_pointer(path: Path, project_root: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(f"{project_root}\n", encoding="utf-8", newline="\n")
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def bind_current_project(
+    project_root: Path,
+    *,
+    workspace_root: Path,
+) -> ProjectBindingResult:
+    """Bind one workspace using only the Codex pointer and native registry."""
     root = normalize_windows_path(project_root).expanduser().resolve()
     if not _is_project_root(root):
         raise FileNotFoundError(f"Not a webnovel project root (missing .webnovel/state.json): {root}")
 
-    ws_root = Path(workspace_root).expanduser().resolve() if workspace_root else _find_workspace_root_with_claude(root)
-    if ws_root is None:
-        ws_root = _find_workspace_root_with_claude(Path.cwd().resolve())
-    if ws_root is None:
-        # 兜底：若无法找到 `.claude/`，将项目父目录视为“工作区”候选，
-        # 仅用于写入用户级 registry（不创建 `.claude/` 目录，不写 pointer 文件）。
-        ws_root = root.parent if root.parent != root else None
-    # 注意：ws_root 可能为 None（例如全局安装的 skills/agents，工作区内没有 `.claude/`）。
-    # 这类情况仍然需要写入用户级 registry，以支持后续“空上下文”定位。
+    ws_root = normalize_windows_path(workspace_root).expanduser().resolve()
+    if not ws_root.is_dir():
+        raise FileNotFoundError(f"Workspace root does not exist or is not a directory: {ws_root}")
 
-    pointer_file: Optional[Path] = None
-    if ws_root is not None:
-        # 仅当工作区内已经存在 `.claude/` 时才写入指针，避免在任意目录下“凭空创建 .claude/”。
-        if (ws_root / ".claude").is_dir():
-            try:
-                pointer_file = ws_root / CURRENT_PROJECT_POINTER_REL
-                pointer_file.write_text(str(root), encoding="utf-8")
-            except Exception:
-                pointer_file = None
-
-    # best-effort 更新用户级 registry（不阻断）
+    pointer_file = ws_root / CODEX_CURRENT_PROJECT_POINTER_REL
     try:
-        update_global_registry_current_project(workspace_root=ws_root, project_root=root)
-    except Exception:
-        pass
+        _atomic_write_pointer(pointer_file, root)
+    except (OSError, UnicodeError):
+        pointer_file = None
 
-    return pointer_file
+    try:
+        registry_path = update_global_registry_current_project(workspace_root=ws_root, project_root=root)
+    except (OSError, ValueError):
+        registry_path = None
+
+    return ProjectBindingResult(
+        project_root=root,
+        workspace_root=ws_root,
+        pointer_path=pointer_file,
+        registry_path=registry_path,
+    )
+
+
+def write_current_project_pointer(project_root: Path, *, workspace_root: Optional[Path] = None) -> Optional[Path]:
+    """Compatibility wrapper; new callers should use :func:`bind_current_project`."""
+    if workspace_root is None:
+        return None
+    return bind_current_project(project_root, workspace_root=workspace_root).pointer_path
+
+
+def resolve_project(
+    explicit_project_root: Optional[str] = None,
+    *,
+    cwd: Optional[Path] = None,
+) -> ProjectResolution:
+    """Resolve a project with stable provenance and read-only legacy fallback."""
+    if explicit_project_root is not None:
+        if not str(explicit_project_root).strip():
+            raise FileNotFoundError("Explicit project root is empty")
+        root = normalize_windows_path(explicit_project_root).expanduser()
+        try:
+            root = root.resolve()
+        except OSError as exc:
+            raise FileNotFoundError(
+                f"Explicit project root cannot be resolved: {root}: {exc}"
+            ) from exc
+        if not _is_project_root(root):
+            raise FileNotFoundError(f"Not a webnovel project root (missing .webnovel/state.json): {root}")
+        return ProjectResolution(root, "cli")
+
+    env_root = os.environ.get("WEBNOVEL_PROJECT_ROOT")
+    if env_root is not None:
+        if not env_root.strip():
+            raise FileNotFoundError("WEBNOVEL_PROJECT_ROOT is set but empty")
+        root = normalize_windows_path(env_root).expanduser()
+        try:
+            root = root.resolve()
+        except OSError as exc:
+            raise FileNotFoundError(
+                f"WEBNOVEL_PROJECT_ROOT cannot be resolved: {root}: {exc}"
+            ) from exc
+        if not _is_project_root(root):
+            raise FileNotFoundError(
+                f"WEBNOVEL_PROJECT_ROOT is set but invalid (missing .webnovel/state.json): {root}"
+            )
+        return ProjectResolution(root, "env")
+
+    base = (cwd or Path.cwd()).resolve()
+    boundary = _find_search_boundary(base)
+
+    for candidate in _candidate_roots(base, stop_at=boundary):
+        if _is_project_root(candidate):
+            return ProjectResolution(candidate.resolve(), "cwd")
+
+    pointer_root = _resolve_project_root_from_pointer(
+        base,
+        CODEX_CURRENT_PROJECT_POINTER_REL,
+        stop_at=boundary,
+    )
+    if pointer_root is not None:
+        return ProjectResolution(pointer_root, "codex_pointer")
+
+    registry_root = _resolve_project_root_from_registry_path(
+        _global_registry_path(),
+        base,
+        stop_at=boundary,
+    )
+    if registry_root is not None:
+        return ProjectResolution(registry_root, "codex_registry")
+
+    legacy_starts = [base]
+    legacy_hint_raw = os.environ.get(ENV_CLAUDE_PROJECT_DIR)
+    if legacy_hint_raw:
+        legacy_hint = normalize_windows_path(legacy_hint_raw).expanduser()
+        try:
+            legacy_hint = legacy_hint.resolve()
+        except OSError:
+            pass
+        if _normcase_path_key(legacy_hint) != _normcase_path_key(base):
+            legacy_starts.append(legacy_hint)
+
+    for legacy_start in legacy_starts:
+        legacy_boundary = _find_search_boundary(legacy_start)
+        pointer_root = _resolve_project_root_from_pointer(
+            legacy_start,
+            LEGACY_CURRENT_PROJECT_POINTER_REL,
+            stop_at=legacy_boundary,
+            allow_pointer_dir_relative=True,
+        )
+        if pointer_root is not None:
+            return ProjectResolution(pointer_root, "legacy_pointer", "legacy_read_only")
+
+    for legacy_start in legacy_starts:
+        registry_root = _resolve_project_root_from_registry_path(
+            _legacy_global_registry_path(),
+            legacy_start,
+            stop_at=_find_search_boundary(legacy_start),
+        )
+        if registry_root is not None:
+            return ProjectResolution(registry_root, "legacy_registry", "legacy_read_only")
+
+    raise FileNotFoundError(
+        "Unable to locate webnovel project root. Expected `.webnovel/state.json` in the current directory "
+        "or an ancestor, a Codex workspace pointer/registry, or a read-only legacy pointer/registry. "
+        "Run `webnovel init`, use `webnovel use <project_root>`, pass --project-root, or set "
+        "WEBNOVEL_PROJECT_ROOT."
+    )
 
 
 def resolve_project_root(explicit_project_root: Optional[str] = None, *, cwd: Optional[Path] = None) -> Path:
-    """
-    Resolve the webnovel project root directory (the directory containing `.webnovel/state.json`).
-
-    Resolution order:
-    1) explicit_project_root (if provided)
-    2) env var WEBNOVEL_PROJECT_ROOT (if set)
-    3) Search from cwd and parents, including common subdir `webnovel-project/`
-
-    Search safety:
-    - If current location is inside a Git repo, parent search stops at the repo root.
-      This avoids accidentally binding to unrelated parent directories.
-
-    Raises:
-        FileNotFoundError: if no valid project root can be found.
-    """
-    if explicit_project_root:
-        root = normalize_windows_path(explicit_project_root).expanduser().resolve()
-        if _is_project_root(root):
-            return root
-
-        # 兼容：显式传入“工作区根目录”（含 `.claude/.webnovel-current-project` 指针）
-        # 例如：D:\wk\xiaoshuo 不是项目根，但其指针指向 D:\wk\xiaoshuo\<书名>
-        pointer_root = _resolve_project_root_from_pointer(root, stop_at=_find_git_root(root))
-        if pointer_root is not None:
-            return pointer_root
-
-        child_root = _resolve_unique_child_project_root(root)
-        if child_root is not None:
-            return child_root
-
-        # 兼容：显式传入“工作区根目录”但其 `.claude/` 在用户目录（全局安装）时，
-        # workspace 内部可能没有指针文件。此时从用户级 registry 查找。
-        reg_root = _resolve_project_root_from_global_registry(
-            root,
-            workspace_hint=root,
-            allow_last_used_fallback=False,
-        )
-        if reg_root is not None:
-            return reg_root
-
-        raise FileNotFoundError(f"Not a webnovel project root (missing .webnovel/state.json): {root}")
-
-    env_root = os.environ.get("WEBNOVEL_PROJECT_ROOT")
-    if env_root:
-        root = normalize_windows_path(env_root).expanduser().resolve()
-        if _is_project_root(root):
-            return root
-        raise FileNotFoundError(f"WEBNOVEL_PROJECT_ROOT is set but invalid (missing .webnovel/state.json): {root}")
-
-    base = (cwd or Path.cwd()).resolve()
-    git_root = _find_git_root(base)
-
-    # Workspace pointer fallback (for layouts where `.claude` is in workspace root and projects are subdirs).
-    pointer_root = _resolve_project_root_from_pointer(base, stop_at=git_root)
-    if pointer_root is not None:
-        return pointer_root
-
-    # 用户级 registry fallback（仅在“有上下文提示”时启用，避免误命中）
-    # - 若 CLAUDE_PROJECT_DIR 存在：认为 Claude Code 提供了工作区上下文
-    # - 否则仅在 base 位于某个已记录 workspace 内时启用（前缀匹配）
-    allow_last_used = bool(os.environ.get(ENV_CLAUDE_PROJECT_DIR))
-    reg_root = _resolve_project_root_from_global_registry(
-        base,
-        workspace_hint=None,
-        allow_last_used_fallback=allow_last_used,
-    )
-    if reg_root is not None:
-        return reg_root
-
-    for candidate in _candidate_roots(base, stop_at=git_root):
-        if _is_project_root(candidate):
-            return candidate.resolve()
-
-    raise FileNotFoundError(
-        "Unable to locate webnovel project root. Expected `.webnovel/state.json` under the current directory, "
-        "a parent directory, or `webnovel-project/`. Run /webnovel-init first or pass --project-root / set "
-        "WEBNOVEL_PROJECT_ROOT."
-    )
+    """Compatibility API returning only the resolved project root path."""
+    return resolve_project(explicit_project_root, cwd=cwd).project_root
 
 
 def resolve_state_file(

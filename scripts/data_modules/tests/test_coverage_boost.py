@@ -323,8 +323,10 @@ def _load_webnovel_module():
 
 def test_webnovel_cmd_where(monkeypatch, tmp_path, capsys):
     module = _load_webnovel_module()
+    from project_locator import ProjectResolution
+
     book_root = tmp_path / "book"
-    monkeypatch.setattr(module, "_resolve_root", lambda _=None: book_root)
+    monkeypatch.setattr(module, "resolve_project", lambda _=None: ProjectResolution(book_root, "cwd"))
     monkeypatch.setattr(sys, "argv", ["webnovel", "where"])
     with pytest.raises(SystemExit) as exc:
         module.main()
@@ -503,12 +505,19 @@ def test_webnovel_remainder_strips_leading_double_dash(monkeypatch, tmp_path):
 
 def test_webnovel_cmd_use(monkeypatch, tmp_path, capsys):
     module = _load_webnovel_module()
+    from project_locator import ProjectBindingResult
+
     book_root = tmp_path / "book"
     (book_root / ".webnovel").mkdir(parents=True, exist_ok=True)
     (book_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(book_root)
 
-    monkeypatch.setattr(module, "write_current_project_pointer", lambda pr, workspace_root=None: None)
-    monkeypatch.setattr(module, "update_global_registry_current_project", lambda workspace_root=None, project_root=None: None)
+    monkeypatch.setattr(
+        module,
+        "bind_current_project",
+        lambda pr, workspace_root=None: ProjectBindingResult(book_root, book_root.parent, None, None),
+    )
+    monkeypatch.setattr(module, "confirm_current_workspace", lambda _pr: book_root)
     monkeypatch.setattr(sys, "argv", ["webnovel", "use", str(book_root)])
 
     with pytest.raises(SystemExit) as exc:
@@ -520,14 +529,19 @@ def test_webnovel_cmd_use(monkeypatch, tmp_path, capsys):
 
 def test_webnovel_cmd_use_with_workspace_root(monkeypatch, tmp_path, capsys):
     module = _load_webnovel_module()
+    from project_locator import ProjectBindingResult
+
     book_root = tmp_path / "book"
     workspace_root = tmp_path / "ws"
 
     pointer_path = tmp_path / "pointer.txt"
     reg_path = tmp_path / "registry.json"
 
-    monkeypatch.setattr(module, "write_current_project_pointer", lambda pr, workspace_root=None: pointer_path)
-    monkeypatch.setattr(module, "update_global_registry_current_project", lambda workspace_root=None, project_root=None: reg_path)
+    monkeypatch.setattr(
+        module,
+        "bind_current_project",
+        lambda pr, workspace_root=None: ProjectBindingResult(book_root, workspace_root, pointer_path, reg_path),
+    )
     monkeypatch.setattr(sys, "argv", ["webnovel", "use", str(book_root), "--workspace-root", str(workspace_root)])
 
     with pytest.raises(SystemExit) as exc:

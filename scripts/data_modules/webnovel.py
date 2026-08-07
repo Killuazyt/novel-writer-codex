@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import Optional
 
 from runtime_compat import enable_windows_utf8_stdio, normalize_windows_path
-from project_locator import resolve_project_root, write_current_project_pointer, update_global_registry_current_project
+from project_locator import (
+    bind_current_project,
+    confirm_current_workspace,
+    resolve_project,
+    resolve_project_root,
+)
 
 from .story_runtime_health import build_story_runtime_health
 
@@ -46,10 +51,9 @@ def _scripts_dir() -> Path:
 
 
 def _resolve_root(explicit_project_root: Optional[str]) -> Path:
-    # 允许显式传入工作区根目录或书项目根目录
-    raw = explicit_project_root
-    if raw:
-        return resolve_project_root(raw)
+    # 显式路径必须是包含 `.webnovel/state.json` 的书项目根目录。
+    if explicit_project_root is not None:
+        return resolve_project_root(explicit_project_root)
     return resolve_project_root()
 
 
@@ -144,18 +148,21 @@ def _run_script(script_name: str, argv: list[str]) -> int:
 
 def cmd_where(args: argparse.Namespace) -> int:
     try:
-        root = _resolve_root(args.project_root)
+        resolution = resolve_project(args.project_root)
     except FileNotFoundError as exc:
         print(_project_root_diagnostic(args.project_root, exc), file=sys.stderr)
-        return 1
-    print(str(root))
+        return 2 if args.project_root is not None else 1
+    if args.format == "json":
+        print(json.dumps(resolution.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(str(resolution.project_root))
     return 0
 
 
 def _project_root_diagnostic(
     explicit_project_root: Optional[str], exc: FileNotFoundError
 ) -> str:
-    if explicit_project_root:
+    if explicit_project_root is not None:
         return (
             "未找到有效书项目根目录（需要包含 .webnovel/state.json）: "
             f"{explicit_project_root}\n"
@@ -485,7 +492,6 @@ def cmd_use(args: argparse.Namespace) -> int:
     try:
         project_root = project_root.resolve()
     except Exception as exc:
-        import sys
         print(f"⚠️ path.resolve() 失败 ({project_root}): {exc}", file=sys.stderr)
         project_root = project_root
 
@@ -495,21 +501,31 @@ def cmd_use(args: argparse.Namespace) -> int:
         try:
             workspace_root = workspace_root.resolve()
         except Exception as exc:
-            import sys
             print(f"⚠️ path.resolve() 失败 ({workspace_root}): {exc}", file=sys.stderr)
             workspace_root = workspace_root
 
-    # 1) 写入工作区指针（若工作区内存在 `.claude/`）
-    pointer_file = write_current_project_pointer(project_root, workspace_root=workspace_root)
-    if pointer_file is not None:
-        print(f"workspace pointer: {pointer_file}")
+    if workspace_root is None:
+        workspace_root = confirm_current_workspace(project_root)
+        if workspace_root is None:
+            print(
+                "无法安全确认当前 workspace；请显式传入 --workspace-root，"
+                "不会猜测书项目父目录或写入插件目录。",
+                file=sys.stderr,
+            )
+            return 2
+
+    try:
+        binding = bind_current_project(project_root, workspace_root=workspace_root)
+    except (FileNotFoundError, OSError, UnicodeError, ValueError) as exc:
+        print(f"无法绑定书项目: {exc}", file=sys.stderr)
+        return 2
+    if binding.pointer_path is not None:
+        print(f"workspace pointer: {binding.pointer_path}")
     else:
         print("workspace pointer: (skipped)")
 
-    # 2) 写入用户级 registry（保证全局安装/空上下文可恢复）
-    reg_path = update_global_registry_current_project(workspace_root=workspace_root, project_root=project_root)
-    if reg_path is not None:
-        print(f"global registry: {reg_path}")
+    if binding.registry_path is not None:
+        print(f"global registry: {binding.registry_path}")
     else:
         print("global registry: (skipped)")
 
@@ -518,11 +534,12 @@ def cmd_use(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="webnovel unified CLI")
-    parser.add_argument("--project-root", help="书项目根目录或工作区根目录（可选，默认自动检测）")
+    parser.add_argument("--project-root", help="书项目根目录（必须包含 .webnovel/state.json；可选，默认自动检测）")
 
     sub = parser.add_subparsers(dest="tool", required=True)
 
     p_where = sub.add_parser("where", help="打印解析出的 project_root")
+    p_where.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     p_where.set_defaults(func=cmd_where)
 
     p_preflight = sub.add_parser("preflight", help="校验统一 CLI 运行环境与 project_root")
@@ -594,7 +611,10 @@ def main() -> None:
 
     p_use = sub.add_parser("use", help="绑定当前工作区使用的书项目（写入指针/registry）")
     p_use.add_argument("project_root", help="书项目根目录（必须包含 .webnovel/state.json）")
-    p_use.add_argument("--workspace-root", help="工作区根目录（可选；默认由运行环境推断）")
+    p_use.add_argument(
+        "--workspace-root",
+        help="工作区根目录；省略时仅在当前目录能安全确认工作区时自动使用",
+    )
     p_use.set_defaults(func=cmd_use)
 
     # Pass-through to data modules
