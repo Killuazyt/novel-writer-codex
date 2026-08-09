@@ -1,31 +1,55 @@
 {
-  "schema_version": "novel-writer-codex-agent-mapping/v1",
+  "schema_version": "novel-writer-codex-agent-mapping/v2",
   "host": "codex",
-  "distribution_status": "design-only",
+  "distribution_status": "project-setup",
+  "contract_root": "references/agents",
+  "managed_registry": ".codex/novel-writer-codex/managed-agents.json",
   "agents": [
     {
       "upstream": "context-agent",
-      "canonical": "webnovel-context-agent",
-      "role": "assemble prewrite context and task brief",
-      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+      "canonical": "webnovel_context_agent",
+      "contract": "references/agents/webnovel_context_agent.md",
+      "role": "assemble a complete prewrite task brief without writes",
+      "sandbox_mode": "read-only",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "medium"
+    },
+    {
+      "upstream": null,
+      "canonical": "webnovel_writer",
+      "contract": "references/agents/webnovel_writer.md",
+      "role": "draft, repair, and polish only inside the current write-run staging directory",
+      "sandbox_mode": "workspace-write",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "medium"
     },
     {
       "upstream": "reviewer",
-      "canonical": "webnovel-reviewer",
-      "role": "review draft and return blocking issues",
-      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+      "canonical": "webnovel_reviewer",
+      "contract": "references/agents/webnovel_reviewer.md",
+      "role": "return a strict five-dimension factual review without scores",
+      "sandbox_mode": "read-only",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "medium"
     },
     {
       "upstream": "data-agent",
-      "canonical": "webnovel-data-agent",
-      "role": "produce commit artifacts without writing projections",
-      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+      "canonical": "webnovel_data_agent",
+      "contract": "references/agents/webnovel_data_agent.md",
+      "role": "produce only the three validated commit artifacts",
+      "sandbox_mode": "workspace-write",
+      "model": "gpt-5.6-luna",
+      "model_reasoning_effort": "medium"
     },
     {
       "upstream": "deconstruction-agent",
-      "canonical": "webnovel-deconstruction-agent",
-      "role": "deconstruct reference works and extract reusable knowledge",
-      "codex_strategy": "project .codex/agents TOML during development; generic subagent prompt for plugin distribution"
+      "canonical": "webnovel_deconstruction_agent",
+      "contract": "references/agents/webnovel_deconstruction_agent.md",
+      "role": "deconstruct reliable reference text without creating canon",
+      "sandbox_mode": "read-only",
+      "model": null,
+      "model_reasoning_effort": null,
+      "inherits_parent_model": true
     }
   ]
 }

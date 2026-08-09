@@ -170,6 +170,13 @@ def _surface_text_files(root: Path) -> tuple[list[Path], list[Path], list[Path]]
     )
     agents_root = root / ".codex" / "agents"
     agents = list(agents_root.glob("*.toml")) if agents_root.is_dir() else []
+    for directory in (root / "references" / "agents", root / "references" / "codex"):
+        if directory.is_dir():
+            agents.extend(
+                path
+                for path in directory.rglob("*")
+                if path.is_file() and path.suffix.lower() in TEXT_SURFACE_SUFFIXES
+            )
     hooks_path = root / "hooks" / "hooks.json"
     hooks = [hooks_path] if hooks_path.is_file() else []
     return sorted(skills), sorted(agents), hooks

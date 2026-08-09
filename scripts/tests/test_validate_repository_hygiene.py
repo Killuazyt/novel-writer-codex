@@ -48,3 +48,30 @@ def test_archive_and_non_allowlisted_top_level_are_rejected(tmp_path):
         "archive_path_not_allowlisted",
         "archive_binary_present",
     }
+
+
+def test_adapted_skill_tree_is_allowlisted(tmp_path):
+    root = tmp_path / "plugin"
+    path = root / "skills" / "webnovel-setup" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nname: webnovel-setup\ndescription: setup\n---\n", encoding="utf-8")
+    errors = []
+
+    hygiene._validate_candidate(root, path, errors)
+
+    assert errors == []
+
+
+def test_legacy_top_level_agents_remain_forbidden(tmp_path):
+    root = tmp_path / "plugin"
+    path = root / "agents" / "reviewer.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("legacy\n", encoding="utf-8")
+    errors = []
+
+    hygiene._validate_candidate(root, path, errors)
+
+    assert {item["code"] for item in errors} >= {
+        "archive_path_not_allowlisted",
+        "forbidden_runtime_or_host_path",
+    }

@@ -1,0 +1,29 @@
+{
+  "schema_version": "webnovel-codex-choice-fixtures/v1",
+  "questions": [
+    {
+      "id": "setup_action",
+      "prompt": "要如何处理项目 Agent？",
+      "options": [
+        {
+          "id": "apply",
+          "label": "安装并重启",
+          "description": "写入受管理的项目 Agent，完成后打开新任务。",
+          "recommended": true
+        },
+        {
+          "id": "check_only",
+          "label": "只检查",
+          "description": "保持零写入，仅查看需要变更的项目。",
+          "recommended": false
+        },
+        {
+          "id": "cancel",
+          "label": "取消",
+          "description": "不执行 Setup，也不修改工作区。",
+          "recommended": false
+        }
+      ]
+    }
+  ]
+}

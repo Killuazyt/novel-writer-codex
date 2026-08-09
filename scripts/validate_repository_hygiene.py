@@ -33,10 +33,11 @@ ALLOWED_TOP_LEVEL = {
     "requirements.txt",
     "scripts",
     "sitecustomize.py",
+    "skills",
     "templates",
     "upstream-lock.json",
 }
-FORBIDDEN_TOP_LEVEL = {".claude-plugin", "agents", "skills"}
+FORBIDDEN_TOP_LEVEL = {".claude-plugin", "agents"}
 FORBIDDEN_PARTS = {
     ".story-system",
     ".webnovel",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Setup"
+  short_description: "检查、安装并修复小说工作区所需的五个 Codex 项目 Agent"
+  default_prompt: "Use $webnovel-setup to check this workspace and provision the required project agents after confirmation."

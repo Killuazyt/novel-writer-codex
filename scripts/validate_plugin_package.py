@@ -71,6 +71,48 @@ def _frontmatter(path: Path) -> dict[str, str]:
     return result
 
 
+def _openai_interface(path: Path) -> tuple[dict[str, str], str]:
+    """Read the small interface block without adding a YAML dependency."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, "missing"
+    except UnicodeDecodeError:
+        return {}, "not_utf8"
+    except OSError as exc:
+        return {}, f"read_error:{exc}"
+
+    interface: dict[str, str] = {}
+    in_interface = False
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = raw_line.strip()
+        if indent == 0:
+            in_interface = stripped == "interface:"
+            continue
+        if not in_interface or indent != 2 or ":" not in stripped:
+            continue
+        key, _, raw_value = stripped.partition(":")
+        value = raw_value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return {}, f"invalid_quoted_value:{key.strip()}"
+            if not isinstance(decoded, str):
+                return {}, f"non_string_value:{key.strip()}"
+            value = decoded
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1].replace("''", "'")
+        interface[key.strip()] = value
+    if not interface:
+        return {}, "interface_missing"
+    return interface, ""
+
+
 def _marketplace_plugin(payload: dict[str, Any]) -> dict[str, Any] | None:
     plugins = payload.get("plugins")
     if not isinstance(plugins, list):
@@ -233,6 +275,63 @@ def _check_frontmatter(root: Path, issues: list[dict[str, str]]) -> None:
                         repair="Codex Skill frontmatter 必须包含 name 与 description。",
                     )
                 )
+        extra_fields = sorted(set(fm) - {"name", "description"})
+        if extra_fields:
+            issues.append(
+                _issue(
+                    "skill.frontmatter_fields",
+                    message=f"unsupported frontmatter fields: {', '.join(extra_fields)}",
+                    path=str(skill),
+                    repair="Codex Skill frontmatter 只保留 name 与 description。",
+                )
+            )
+        skill_name = fm.get("name", "").strip().strip('"\'')
+        if skill_name and skill_name != skill.parent.name:
+            issues.append(
+                _issue(
+                    "skill.name",
+                    message=f"frontmatter name={skill_name!r}, directory={skill.parent.name!r}",
+                    path=str(skill),
+                    repair="让 Skill name 与目录名保持一致。",
+                )
+            )
+
+        metadata = skill.parent / "agents" / "openai.yaml"
+        interface, error = _openai_interface(metadata)
+        if error:
+            issues.append(
+                _issue(
+                    "skill.openai_yaml",
+                    message=error,
+                    path=str(metadata),
+                    repair="为 Skill 添加可解析的 agents/openai.yaml interface 元数据。",
+                )
+            )
+            continue
+        missing = [
+            field
+            for field in ("display_name", "short_description", "default_prompt")
+            if not interface.get(field, "").strip()
+        ]
+        if missing:
+            issues.append(
+                _issue(
+                    "skill.openai_interface",
+                    message=f"missing interface fields: {', '.join(missing)}",
+                    path=str(metadata),
+                    repair="补齐 display_name、short_description 与 default_prompt。",
+                )
+            )
+        default_prompt = interface.get("default_prompt", "")
+        if skill_name and f"${skill_name}" not in default_prompt:
+            issues.append(
+                _issue(
+                    "skill.default_prompt",
+                    message=f"default_prompt must explicitly invoke ${skill_name}",
+                    path=str(metadata),
+                    repair=f"在 default_prompt 中显式加入 ${skill_name}。",
+                )
+            )
 
 
 def _check_required_assets(root: Path, issues: list[dict[str, str]]) -> None:

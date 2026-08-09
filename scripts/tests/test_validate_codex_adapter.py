@@ -186,6 +186,24 @@ def test_static_scan_narrow_allowlist_excludes_migration_docs_and_test_fixtures(
     assert errors == []
 
 
+def test_static_scan_includes_canonical_codex_and_agent_references(tmp_path):
+    root = _make_valid_root(tmp_path)
+    _write_text(
+        root / "references" / "codex" / "runtime-invocation.md",
+        "Run ${PLUGIN_ROOT}/scripts/webnovel.py.\n",
+    )
+    _write_text(
+        root / "references" / "agents" / "writer.md",
+        "Use /webnovel-write.\n",
+    )
+
+    errors = validator.validate(root)
+
+    paths = {item["path"].split(":", 1)[0] for item in errors}
+    assert "references/codex/runtime-invocation.md" in paths
+    assert "references/agents/writer.md" in paths
+
+
 def test_static_scan_allows_plugin_root_in_hook_config(tmp_path):
     root = _make_valid_root(tmp_path)
 

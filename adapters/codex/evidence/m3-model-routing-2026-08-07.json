@@ -1,0 +1,103 @@
+{
+  "schema_version": "webnovel-codex-m3-routing-evidence/v1",
+  "captured_on": "2026-08-07",
+  "evidence_source": "codex_trace",
+  "matrix": {
+    "accepted": true,
+    "code": "ok",
+    "required_child_model": "gpt-5.6-luna",
+    "required_child_reasoning_effort": "medium",
+    "parent_models": [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra"
+    ]
+  },
+  "planning_parent_only": {
+    "accepted": true,
+    "thread_ref": "planning-parent-only",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
+    "raw_sha256": "bfe085a00ff0550d4b300be7215fa3dbe7d045f658ec3936e49d9ca7d7c5efd5",
+    "tool_call_count": 0,
+    "completion_marker": "PLANNING_PARENT_ONLY_OK"
+  },
+  "parents": [
+    {
+      "thread_ref": "parent-sol",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high",
+      "raw_sha256": "78385756e861c3a0b44b94d355a48101968857f4dd41a2708524dd97e85eb693",
+      "children": [
+        {
+          "thread_ref": "child-sol-context",
+          "agent_role": "webnovel_context_agent",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "d7688c353dd10bb28f23fe05c9f16bd6d08cec698ed64fe52c2181e72eb1c7f5"
+        },
+        {
+          "thread_ref": "child-sol-writer",
+          "agent_role": "webnovel_writer",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "ab73c3600e54ddcc56b619bd8bb85b3e88f6700515dbe9ac01a63ebd5e042e76"
+        },
+        {
+          "thread_ref": "child-sol-reviewer",
+          "agent_role": "webnovel_reviewer",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "70e81c50980ca2adf300b77d480c749129e3e993103fb1454edb9d935f8c6718"
+        },
+        {
+          "thread_ref": "child-sol-data",
+          "agent_role": "webnovel_data_agent",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "7de91416e1e4919346d5653562155fde988c54802373d9d6b72475bc5427c46d"
+        }
+      ]
+    },
+    {
+      "thread_ref": "parent-terra",
+      "model": "gpt-5.6-terra",
+      "reasoning_effort": "high",
+      "raw_sha256": "ac3cdbc58475aa3df3a5c5bec01cfc2636a18b9ad7bb09019344b8ab840029c4",
+      "children": [
+        {
+          "thread_ref": "child-terra-context",
+          "agent_role": "webnovel_context_agent",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "5877a0fe0d7cb04996e44328e962ea6f30e7062a3a7bb81c3813f91fafc7be4d"
+        },
+        {
+          "thread_ref": "child-terra-writer",
+          "agent_role": "webnovel_writer",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "3ad07811e5afeab431d696a76cdd81f612469bd7ab6a88e6d9ab540641a11732"
+        },
+        {
+          "thread_ref": "child-terra-reviewer",
+          "agent_role": "webnovel_reviewer",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "1025431d9a315cf5796cfe0fc32550d2ae236445dc9844e3fe0b575ce0ed374b"
+        },
+        {
+          "thread_ref": "child-terra-data",
+          "agent_role": "webnovel_data_agent",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "medium",
+          "raw_sha256": "6353d425618d6d7fe77f349b6443b7715be1f4104724ffc9338c1c74c4058b47"
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Every identity and model field was parsed from an explicitly named Codex rollout JSONL; public thread_ref values are role aliases, not host thread UUIDs.",
+    "The evidence contains no absolute local session paths and no task prompts or generated prose.",
+    "Hook persisted-trust evidence is intentionally tracked separately."
+  ]
+}

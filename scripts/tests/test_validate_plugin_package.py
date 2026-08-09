@@ -50,6 +50,15 @@ def _write_minimal_package(
         "---\nname: demo\ndescription: demo\n---\n\n# Demo\n",
         encoding="utf-8",
     )
+    metadata = skill.parent / "agents" / "openai.yaml"
+    metadata.parent.mkdir(parents=True, exist_ok=True)
+    metadata.write_text(
+        "interface:\n"
+        "  display_name: \"Demo\"\n"
+        "  short_description: \"A deterministic demo skill for package tests\"\n"
+        "  default_prompt: \"Use $demo to run the package test.\"\n",
+        encoding="utf-8",
+    )
 
 
 def test_validate_plugin_package_passes_direct_codex_root(tmp_path):
@@ -122,6 +131,43 @@ def test_validate_plugin_package_detects_missing_skill_frontmatter(tmp_path):
 
     assert report["ok"] is False
     assert any(item["code"] == "skill.frontmatter" for item in report["issues"])
+
+
+def test_validate_plugin_package_rejects_extra_skill_frontmatter(tmp_path):
+    _write_minimal_package(tmp_path)
+    skill = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill.write_text(
+        "---\nname: demo\ndescription: demo\nmetadata: legacy\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+
+    report = validate_package(tmp_path)
+
+    assert report["ok"] is False
+    assert any(item["code"] == "skill.frontmatter_fields" for item in report["issues"])
+
+
+def test_validate_plugin_package_requires_openai_yaml_and_explicit_skill_prompt(tmp_path):
+    _write_minimal_package(tmp_path)
+    metadata = tmp_path / "skills" / "demo" / "agents" / "openai.yaml"
+    metadata.unlink()
+
+    missing_report = validate_package(tmp_path)
+
+    assert missing_report["ok"] is False
+    assert any(item["code"] == "skill.openai_yaml" for item in missing_report["issues"])
+
+    metadata.write_text(
+        "interface:\n"
+        "  display_name: \"Demo\"\n"
+        "  short_description: \"A deterministic demo skill for package tests\"\n"
+        "  default_prompt: \"Run the package test.\"\n",
+        encoding="utf-8",
+    )
+    prompt_report = validate_package(tmp_path)
+
+    assert prompt_report["ok"] is False
+    assert any(item["code"] == "skill.default_prompt" for item in prompt_report["issues"])
 
 
 def test_validate_plugin_package_static_scan_blocks_active_slash_command(tmp_path):

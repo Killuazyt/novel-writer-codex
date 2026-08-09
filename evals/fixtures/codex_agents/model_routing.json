@@ -1,0 +1,27 @@
+{
+  "schema_version": "webnovel-codex-model-routing-fixtures/v1",
+  "parent_models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+  "failure_cases": [
+    {
+      "id": "model_unavailable",
+      "status": "model_unavailable",
+      "expected_code": "model_unavailable"
+    },
+    {
+      "id": "actual_model_mismatch",
+      "actual_model": "gpt-5.6-terra",
+      "expected_code": "actual_model_mismatch"
+    },
+    {
+      "id": "parent_model_fallback",
+      "actual_model": "gpt-5.6-sol",
+      "fallback_used": true,
+      "expected_code": "parent_model_fallback_forbidden"
+    },
+    {
+      "id": "actual_effort_mismatch",
+      "actual_reasoning_effort": "low",
+      "expected_code": "actual_reasoning_effort_mismatch"
+    }
+  ]
+}
