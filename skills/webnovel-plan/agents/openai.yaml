@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Plan"
+  short_description: "Plan and validate one novel volume"
+  default_prompt: "Use $webnovel-plan to accept immutable chapter batches, validate one volume, and resolve authored conflicts only through a trusted parent decision receipt."

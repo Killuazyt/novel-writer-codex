@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Learn"
+  short_description: "Save approved writing patterns safely"
+  default_prompt: "Use $webnovel-learn to save an approved writing pattern into this novel project."

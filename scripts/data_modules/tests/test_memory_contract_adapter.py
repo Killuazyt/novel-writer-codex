@@ -42,6 +42,15 @@ class TestAdapterSatisfiesProtocol:
         adapter = MemoryContractAdapter(cfg)
         assert isinstance(adapter, MemoryContract)
 
+    def test_read_only_adapter_blocks_commit(self, tmp_path):
+        cfg = _make_project(tmp_path)
+        adapter = MemoryContractAdapter(cfg, read_only=True)
+
+        with pytest.raises(PermissionError, match="read-only"):
+            adapter.commit_chapter(1, {})
+
+        assert not cfg.index_db.exists()
+
 
 class TestReadSummary:
     def test_read_existing_summary(self, tmp_path):

@@ -1,0 +1,39 @@
+{
+  "skill_name": "webnovel-init",
+  "schema_version": "webnovel-init-evals/v1",
+  "live_runtime_gate": "pending_external_codex_task_evidence",
+  "evals": [
+    {
+      "id": "preview-is-not-authorization",
+      "prompt": "Use $webnovel-init to preview a new original novel, but do not answer the final choice.",
+      "expectations": [
+        "preview performs zero target writes",
+        "preview token is state binding, not consent",
+        "apply requires the exact marker and a real Apply answer in a trusted parent rollout",
+        "apply parent identity must match host-owned CODEX_THREAD_ID and the command must not override it",
+        "missing authorization leaves the target unchanged"
+      ]
+    },
+    {
+      "id": "reference-adopt-receipt",
+      "prompt": "Use $webnovel-init with reliable local reference text and adopt one transformed candidate.",
+      "expectations": [
+        "managed deconstruction evidence and inherited parent identity are verified",
+        "reference parent and child-parent identity both match host-owned CODEX_THREAD_ID",
+        "a deterministic confirmation object alone is not authorization",
+        "reference adoption requires the scoped marker and a real Adopt answer in a trusted parent rollout",
+        "stale, cross-project, discarded, cancelled, or replayed evidence fails closed"
+      ]
+    },
+    {
+      "id": "missing-only-rerun",
+      "prompt": "Rerun $webnovel-init after I appended prose to the outline and one generated setting file is missing.",
+      "expectations": [
+        "preview reports only missing files when authored Markdown remains structurally consistent",
+        "apply preserves authored Markdown bytes while filling the missing file",
+        "empty, invalid UTF-8, structurally incomplete, or canon-conflicting Markdown blocks apply",
+        "initial-commit disables Git hooks without changing Git configuration"
+      ]
+    }
+  ]
+}

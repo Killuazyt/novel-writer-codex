@@ -51,6 +51,7 @@ from .index_reading_mixin import IndexReadingMixin
 from .index_observability_mixin import IndexObservabilityMixin
 from .observability import safe_append_perf_timing, safe_log_tool_call
 from .override_ledger_service import ensure_override_ledger_columns
+from .sqlite_readonly import read_only_sqlite_uri
 
 
 @dataclass
@@ -231,9 +232,13 @@ class WritingChecklistScoreMeta:
 class IndexManager(IndexChapterMixin, IndexEntityMixin, IndexDebtMixin, IndexReadingMixin, IndexObservabilityMixin):
     """索引管理器"""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, read_only: bool = False, initialize: bool = True):
         self.config = config or get_config()
-        self._init_db()
+        self._read_only = bool(read_only)
+        if self._read_only:
+            initialize = False
+        if initialize:
+            self._init_db()
 
     def _init_db(self):
         """初始化数据库表"""
@@ -626,7 +631,12 @@ class IndexManager(IndexChapterMixin, IndexEntityMixin, IndexDebtMixin, IndexRea
     @contextmanager
     def _get_conn(self):
         """获取数据库连接"""
-        conn = sqlite3.connect(str(self.config.index_db))
+        if self._read_only:
+            uri = read_only_sqlite_uri(self.config.index_db)
+            conn = sqlite3.connect(uri, uri=True)
+            conn.execute("PRAGMA query_only=ON")
+        else:
+            conn = sqlite3.connect(str(self.config.index_db))
         conn.row_factory = sqlite3.Row
         try:
             yield conn

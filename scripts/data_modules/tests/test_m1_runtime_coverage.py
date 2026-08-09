@@ -419,6 +419,7 @@ def test_run_ledger_main_records_and_renders_resume(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    (tmp_path / ".webnovel").mkdir()
     chapter_file = tmp_path / "正文" / "第0001章.md"
     chapter_file.parent.mkdir(parents=True)
     chapter_file.write_text("正文", encoding="utf-8")

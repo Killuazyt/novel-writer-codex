@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Review"
+  short_description: "Review one or several chapters safely"
+  default_prompt: "Use $webnovel-review to review the requested chapter, bind it to the host CODEX_THREAD_ID and reviewer child parent, and require a trusted parent-rollout receipt from that exact task for any blocking decision."

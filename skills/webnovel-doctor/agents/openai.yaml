@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Doctor"
+  short_description: "只读诊断小说项目阶段、合同、投影、依赖与 Dashboard 资源"
+  default_prompt: "Use $webnovel-doctor to diagnose the current novel project without changing files or installing anything."

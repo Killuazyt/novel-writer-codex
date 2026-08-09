@@ -28,6 +28,7 @@ from .projection_log import (
     projection_run_failed,
     projection_run_pending,
 )
+from .sqlite_readonly import read_only_sqlite_uri
 from .story_runtime_health import build_story_runtime_health
 
 
@@ -236,7 +237,9 @@ def _sqlite_table_count(path: Path, table: str) -> tuple[bool, int, str]:
     if not path.is_file():
         return False, 0, "missing"
     try:
-        with sqlite3.connect(str(path)) as conn:
+        uri = read_only_sqlite_uri(path)
+        with sqlite3.connect(uri, uri=True) as conn:
+            conn.execute("PRAGMA query_only=ON")
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),

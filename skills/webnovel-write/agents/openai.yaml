@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Chapter"
+  short_description: "Create one chapter transactionally"
+  default_prompt: "Use $webnovel-write to write and recover the requested chapter through verified project Agents."

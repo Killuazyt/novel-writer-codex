@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -26,7 +28,12 @@ def _ensure_scripts_path() -> None:
 _ensure_scripts_path()
 
 from data_modules.review_author_view import render_review_author_view
-from data_modules.review_schema import append_ai_flavor_anti_patterns, parse_review_output
+from data_modules.review_schema import parse_review_output
+
+try:
+    from security_utils import _replace_with_retry
+except ImportError:
+    from scripts.security_utils import _replace_with_retry
 
 
 def _resolve_report_path(project_root: Path, report_file: str) -> Path:
@@ -125,7 +132,23 @@ def render_review_report(payload: Dict[str, Any]) -> str:
 def write_review_report(project_root: Path, report_file: str, payload: Dict[str, Any]) -> Path:
     report_path = _resolve_report_path(project_root, report_file)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(render_review_report(payload), encoding="utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{report_path.name}.",
+        suffix=".tmp",
+        dir=str(report_path.parent),
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(render_review_report(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_with_retry(temp_path, report_path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     return report_path
 
 
@@ -149,69 +172,43 @@ def build_review_artifacts(
     chapter: int,
     review_results_path: Path,
     report_file: str = "",
+    *,
+    review_mode: str = "full",
+    provenance: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    """Build strict artifacts without mutating source, canon, or read models.
+
+    Production persistence is owned by ``data_modules.review_workflow`` after
+    runtime identity, input hash, and ledger validation.
+    """
+
     raw = json.loads(review_results_path.read_text(encoding="utf-8"))
-    result = parse_review_output(chapter=chapter, raw=raw)
-    anti_patterns_added = append_ai_flavor_anti_patterns(project_root, result)
-    metrics = result.to_metrics_dict(report_file=report_file)
-    normalized_review = result.to_dict()
-    review_results_path.parent.mkdir(parents=True, exist_ok=True)
-    review_results_path.write_text(
-        json.dumps(normalized_review, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    result = parse_review_output(
+        chapter=chapter,
+        raw=raw,
+        review_mode=review_mode,
+        strict=True,
     )
+    metrics = result.to_metrics_dict(report_file=report_file, provenance=provenance)
+    normalized_review = result.to_dict()
 
     return {
         "chapter": chapter,
         "review_result": normalized_review,
         "metrics": metrics,
-        "anti_patterns_added": anti_patterns_added,
+        "anti_patterns_added": 0,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Review pipeline v6")
+    parser = argparse.ArgumentParser(description="Resume an accepted Review workflow run")
     parser.add_argument("--project-root", required=True)
-    parser.add_argument("--chapter", type=int, required=True)
-    parser.add_argument("--review-results", required=True)
-    parser.add_argument("--metrics-out", default="")
-    parser.add_argument("--report-file", default="")
-    parser.add_argument("--save-metrics", action="store_true",
-                        help="直接写入 index.db，省去单独调用 save-review-metrics")
+    parser.add_argument("--run-id", required=True)
 
     args = parser.parse_args()
-    project_root = Path(args.project_root)
-    review_results_path = Path(args.review_results)
+    from data_modules.review_workflow import persist_review_run
 
-    payload = build_review_artifacts(
-        project_root=project_root,
-        chapter=args.chapter,
-        review_results_path=review_results_path,
-        report_file=args.report_file,
-    )
-
-    if args.metrics_out:
-        out_path = Path(args.metrics_out)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(
-            json.dumps(payload["metrics"], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    if args.report_file:
-        write_review_report(
-            project_root=project_root,
-            report_file=args.report_file,
-            payload=payload,
-        )
-
-    if args.save_metrics:
-        from data_modules.config import DataModulesConfig
-        from data_modules.index_manager import IndexManager
-        config = DataModulesConfig.from_project_root(project_root)
-        manager = IndexManager(config)
-        manager.save_review_metrics(_build_review_metrics_record(payload["metrics"]))
-
+    payload = persist_review_run(Path(args.project_root), run_id=args.run_id)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

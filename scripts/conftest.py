@@ -31,12 +31,27 @@ _UPSTREAM_CONTRACT_FILES = {
     "test_validate_release_notes.py",
 }
 _CODEX_CONTRACT_FILES = {
+    "test_agent_contracts.py",
+    "test_codex_agent_runtime.py",
+    "test_codex_interaction.py",
+    "test_codex_m3_smoke.py",
+    "test_codex_m4_smoke.py",
+    "test_codex_setup.py",
     "test_hooks.py",
     "test_project_status.py",
     "test_pytest_isolation.py",
     "test_test_harness.py",
     "test_validate_codex_adapter.py",
     "test_validate_repository_hygiene.py",
+    "test_webnovel_setup_skill.py",
+    "test_webnovel_doctor_skill.py",
+    "test_webnovel_dashboard_skill.py",
+    "test_webnovel_query_skill.py",
+    "test_webnovel_learn_skill.py",
+    "test_webnovel_init_skill.py",
+    "test_webnovel_review_skill.py",
+    "test_webnovel_plan_skill.py",
+    "test_webnovel_write_skill.py",
 }
 _INTEGRATION_FILES = {
     "test_backup_manager.py",

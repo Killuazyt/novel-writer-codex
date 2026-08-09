@@ -89,10 +89,13 @@ PASSTHROUGH_TOOLS = {
     "update-state",
     "backup",
     "archive",
-    "init",
     "story-system",
     "memory-contract",
     "project-memory",
+    "plan-request",
+    "plan-validate",
+    "plan-transaction",
+    "write-transaction",
 }
 
 
@@ -157,6 +160,19 @@ def cmd_where(args: argparse.Namespace) -> int:
     else:
         print(str(resolution.project_root))
     return 0
+
+
+def cmd_codex_setup(args: argparse.Namespace) -> int:
+    """Check or provision this workspace's managed project agents."""
+
+    from .codex_setup import format_setup_result, run_codex_setup
+
+    code, result = run_codex_setup(
+        args.workspace_root,
+        apply=bool(args.apply),
+    )
+    print(format_setup_result(result, args.format))
+    return code
 
 
 def _project_root_diagnostic(
@@ -370,6 +386,95 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if report.get("ok") else 1
 
 
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Start, inspect, or stop the project-scoped local Dashboard."""
+
+    from .dashboard_lifecycle import (
+        dashboard_exit_code,
+        dashboard_start,
+        dashboard_status,
+        dashboard_stop,
+        format_dashboard_result,
+    )
+
+    root = _resolve_root(args.project_root)
+    if args.dashboard_action == "start":
+        result = dashboard_start(root, host=args.host, port=args.port)
+    elif args.dashboard_action == "status":
+        result = dashboard_status(root)
+    else:
+        result = dashboard_stop(root)
+    print(format_dashboard_result(result, args.format))
+    return dashboard_exit_code(result)
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Preview or apply one strictly confirmed initialization request."""
+
+    from .init_request import InitRequestError
+    from .init_workflow import InitWorkflowError, apply_init, preview_init
+
+    try:
+        if args.project_root is not None:
+            raise InitRequestError(
+                "init does not accept --project-root; the confirmed target comes only from --config-json"
+            )
+        if args.apply:
+            if args.git_mode is None:
+                raise InitRequestError(
+                    "--apply requires an explicit --git-mode off|init|initial-commit"
+                )
+            if not args.preview_token:
+                raise InitRequestError("--apply requires --preview-token from the matching dry-run")
+            if not args.authorization_json:
+                raise InitRequestError(
+                    "--apply requires --authorization-json with trusted parent user Apply evidence"
+                )
+            result = apply_init(
+                args.config_json,
+                git_mode=args.git_mode,
+                preview_token=args.preview_token,
+                authorization_json=args.authorization_json,
+            )
+        else:
+            if args.preview_token:
+                raise InitRequestError("--preview-token is valid only with --apply")
+            if args.authorization_json:
+                raise InitRequestError("--authorization-json is valid only with --apply")
+            result = preview_init(args.config_json, git_mode=args.git_mode or "off")
+    except InitRequestError as exc:
+        result = {
+            "schema_version": "webnovel-init-error/v1",
+            "status": "error",
+            "code": "invalid_request",
+            "error": str(exc),
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2
+    except InitWorkflowError as exc:
+        result = {
+            "schema_version": "webnovel-init-error/v1",
+            "status": "blocked",
+            "code": getattr(exc, "code", "init_blocked"),
+            "error": str(exc),
+            "details": getattr(exc, "details", {}),
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+    except (OSError, UnicodeError, subprocess.SubprocessError, TimeoutError) as exc:
+        result = {
+            "schema_version": "webnovel-init-error/v1",
+            "status": "blocked",
+            "code": "init_operational_error",
+            "error": str(exc) or exc.__class__.__name__,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") in {"ready", "success"} else 1
+
+
 def cmd_write_gate(args: argparse.Namespace) -> int:
     from .write_gates import format_gate_report, run_write_gate
 
@@ -407,6 +512,92 @@ def cmd_user_report(args: argparse.Namespace) -> int:
     )
     print(format_user_report(report, args.format))
     return 0
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    from .review_request import ReviewRequestError
+    from .review_workflow import (
+        ReviewWorkflowError,
+        decide_review,
+        decide_review_range,
+        error_payload,
+        format_review_result,
+        prepare_review,
+        prepare_review_range,
+        resume_review,
+        resume_review_range,
+        accept_review,
+    )
+    from .run_ledger import RunLedgerError
+
+    try:
+        root = _resolve_root(args.project_root)
+        action = args.review_action
+        if action == "prepare":
+            payload = prepare_review(
+                root,
+                chapter=args.chapter,
+                review_mode=args.mode,
+                workspace_root=args.workspace_root,
+                parent_model=args.parent_model,
+                parent_reasoning_effort=args.parent_effort or None,
+            )
+        elif action == "accept":
+            payload = accept_review(root, run_id=args.run_id, request_file=args.request_file)
+        elif action == "decide":
+            payload = decide_review(
+                root,
+                run_id=args.run_id,
+                request_file=args.request_file,
+            )
+        elif action == "resume":
+            payload = resume_review(root, run_id=args.run_id)
+        elif action == "range-prepare":
+            payload = prepare_review_range(
+                root,
+                start=args.start,
+                end=args.end,
+                review_mode=args.mode,
+                workspace_root=args.workspace_root,
+                parent_model=args.parent_model,
+                parent_reasoning_effort=args.parent_effort or None,
+            )
+        elif action == "range-resume":
+            payload = resume_review_range(root, range_id=args.range_id)
+        else:
+            payload = decide_review_range(
+                root,
+                range_id=args.range_id,
+                request_file=args.request_file,
+            )
+    except (ReviewWorkflowError, ReviewRequestError, RunLedgerError, OSError, ValueError) as exc:
+        payload = error_payload(exc)
+        print(format_review_result(payload, args.format))
+        invalid_codes = {
+            "invalid_request",
+            "invalid_chapter",
+            "invalid_range",
+            "range_too_large",
+            "invalid_review_mode",
+            "invalid_choice",
+            "invalid_run_id",
+            "invalid_range_id",
+        }
+        return 2 if payload.get("code") in invalid_codes else 1
+    print(format_review_result(payload, args.format))
+    non_success_statuses = {
+        "blocked",
+        "recoverable",
+        "failed",
+        "awaiting_user",
+        "paused",
+        "targeted_fix_pending",
+        "targeted_fix_blocked",
+        "failed_validation",
+        "failed_persistence",
+        "stale",
+    }
+    return 1 if payload.get("status") in non_success_statuses else 0
 
 
 def cmd_run_ledger(args: argparse.Namespace) -> int:
@@ -542,6 +733,14 @@ def main() -> None:
     p_where.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     p_where.set_defaults(func=cmd_where)
 
+    p_codex_setup = sub.add_parser("codex-setup", help="检查或安装项目级 Codex Agent")
+    p_codex_setup.add_argument("--workspace-root", required=True, help="要安装项目 Agent 的工作区根目录")
+    setup_mode = p_codex_setup.add_mutually_exclusive_group()
+    setup_mode.add_argument("--check", action="store_true", help="只检查，不写入（默认）")
+    setup_mode.add_argument("--apply", action="store_true", help="安装或更新已管理的 Agent")
+    p_codex_setup.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+    p_codex_setup.set_defaults(func=cmd_codex_setup)
+
     p_preflight = sub.add_parser("preflight", help="校验统一 CLI 运行环境与 project_root")
     p_preflight.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     p_preflight.set_defaults(func=cmd_preflight)
@@ -556,6 +755,25 @@ def main() -> None:
     p_doctor.add_argument("--deep", action="store_true", help="包含 dashboard 等较深检查")
     p_doctor.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_dashboard = sub.add_parser("dashboard", help="管理项目级只读本地 Dashboard")
+    dashboard_sub = p_dashboard.add_subparsers(dest="dashboard_action", required=True)
+    p_dashboard_start = dashboard_sub.add_parser("start", help="在数字 loopback 上启动 Dashboard")
+    p_dashboard_start.add_argument("--host", default="127.0.0.1", help="仅允许 localhost/127.0.0.1")
+    p_dashboard_start.add_argument("--port", type=int, default=0, help="监听端口；0 为动态端口")
+    p_dashboard_start.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="兼容参数；Dashboard 始终不会自动打开浏览器",
+    )
+    p_dashboard_start.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+    p_dashboard_start.set_defaults(func=cmd_dashboard)
+    p_dashboard_status = dashboard_sub.add_parser("status", help="只读检查 Dashboard 状态")
+    p_dashboard_status.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+    p_dashboard_status.set_defaults(func=cmd_dashboard)
+    p_dashboard_stop = dashboard_sub.add_parser("stop", help="停止已验证身份的 Dashboard")
+    p_dashboard_stop.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
+    p_dashboard_stop.set_defaults(func=cmd_dashboard)
 
     p_write_gate = sub.add_parser("write-gate", help="写章自然边界校验")
     p_write_gate.add_argument("--chapter", type=int, required=True, help="目标章节号")
@@ -581,6 +799,49 @@ def main() -> None:
     p_user_report.add_argument("--volume", type=int, default=None, help="目标卷号")
     p_user_report.add_argument("--format", choices=["text", "json"], default="text", help="输出格式")
     p_user_report.set_defaults(func=cmd_user_report)
+
+    p_review = sub.add_parser("review", help="严格单章或最多五章串行审查")
+    review_sub = p_review.add_subparsers(dest="review_action", required=True)
+    p_review_prepare = review_sub.add_parser("prepare", help="生成 reviewer 的只读请求包")
+    p_review_prepare.add_argument("--chapter", type=int, required=True)
+    p_review_prepare.add_argument("--mode", choices=["full", "fast"], default="full")
+    p_review_prepare.add_argument("--workspace-root", required=True)
+    p_review_prepare.add_argument("--parent-model", required=True)
+    p_review_prepare.add_argument("--parent-effort", default="")
+    p_review_prepare.add_argument("--format", choices=["json", "text"], default="json")
+    p_review_prepare.set_defaults(func=cmd_review)
+    p_review_accept = review_sub.add_parser("accept", help="验证 runtime evidence 与 reviewer JSON")
+    p_review_accept.add_argument("--run-id", required=True)
+    p_review_accept.add_argument("--request-file", required=True)
+    p_review_accept.add_argument("--format", choices=["json", "text"], default="json")
+    p_review_accept.set_defaults(func=cmd_review)
+    p_review_decide = review_sub.add_parser("decide", help="处理 blocking 三选一裁决")
+    p_review_decide.add_argument("--run-id", required=True)
+    p_review_decide.add_argument("--request-file", required=True)
+    p_review_decide.add_argument("--format", choices=["json", "text"], default="json")
+    p_review_decide.set_defaults(func=cmd_review)
+    p_review_resume = review_sub.add_parser("resume", help="从 ledger 的最早未完成步骤恢复")
+    p_review_resume.add_argument("--run-id", required=True)
+    p_review_resume.add_argument("--format", choices=["json", "text"], default="json")
+    p_review_resume.set_defaults(func=cmd_review)
+    p_range_prepare = review_sub.add_parser("range-prepare", help="准备最多五章的串行范围审查")
+    p_range_prepare.add_argument("--start", type=int, required=True)
+    p_range_prepare.add_argument("--end", type=int, required=True)
+    p_range_prepare.add_argument("--mode", choices=["full", "fast"], default="full")
+    p_range_prepare.add_argument("--workspace-root", required=True)
+    p_range_prepare.add_argument("--parent-model", required=True)
+    p_range_prepare.add_argument("--parent-effort", default="")
+    p_range_prepare.add_argument("--format", choices=["json", "text"], default="json")
+    p_range_prepare.set_defaults(func=cmd_review)
+    p_range_resume = review_sub.add_parser("range-resume", help="恢复范围审查当前章节")
+    p_range_resume.add_argument("--range-id", required=True)
+    p_range_resume.add_argument("--format", choices=["json", "text"], default="json")
+    p_range_resume.set_defaults(func=cmd_review)
+    p_range_decide = review_sub.add_parser("range-decide", help="范围 blocker/失败后的停止或继续裁决")
+    p_range_decide.add_argument("--range-id", required=True)
+    p_range_decide.add_argument("--request-file", required=True)
+    p_range_decide.add_argument("--format", choices=["json", "text"], default="json")
+    p_range_decide.set_defaults(func=cmd_review)
 
     p_run_ledger = sub.add_parser("run-ledger", help="记录或查询写章断点续跑状态")
     run_ledger_sub = p_run_ledger.add_subparsers(dest="ledger_action", required=True)
@@ -655,8 +916,24 @@ def main() -> None:
     p_archive = sub.add_parser("archive", help="转发到 archive_manager.py")
     p_archive.add_argument("args", nargs=argparse.REMAINDER)
 
-    p_init = sub.add_parser("init", help="转发到 init_project.py（初始化项目）")
-    p_init.add_argument("args", nargs=argparse.REMAINDER)
+    p_init = sub.add_parser("init", help="两阶段、missing-only 的受控项目初始化")
+    p_init.add_argument("--config-json", required=True, help="WEBNOVEL_HOME/tmp/init 下的严格请求 JSON")
+    init_mode = p_init.add_mutually_exclusive_group(required=True)
+    init_mode.add_argument("--dry-run", action="store_true", help="零目标写入预览")
+    init_mode.add_argument("--apply", action="store_true", help="应用匹配的已确认预览")
+    p_init.add_argument(
+        "--git-mode",
+        choices=["off", "init", "initial-commit"],
+        default=None,
+        help="dry-run 默认 off；apply 必须显式提供",
+    )
+    p_init.add_argument("--preview-token", default="", help="apply 所需的 matching dry-run token")
+    p_init.add_argument(
+        "--authorization-json",
+        default="",
+        help="apply 所需的可信 parent rollout 有限选择授权 JSON",
+    )
+    p_init.set_defaults(func=cmd_init)
 
     p_extract_context = sub.add_parser("extract-context", help="转发到 extract_chapter_context.py")
     p_extract_context.add_argument("--chapter", type=int, required=True, help="目标章节号")
@@ -683,12 +960,20 @@ def main() -> None:
     p_project_memory = sub.add_parser("project-memory", help="转发到 project_memory.py")
     p_project_memory.add_argument("args", nargs=argparse.REMAINDER)
 
-    p_review_pipeline = sub.add_parser("review-pipeline", help="转发到 review_pipeline.py")
-    p_review_pipeline.add_argument("--chapter", type=int, required=True, help="目标章节号")
-    p_review_pipeline.add_argument("--review-results", required=True, help="reviewer 原始结果 JSON 文件")
-    p_review_pipeline.add_argument("--metrics-out", default="", help="metrics 输出文件")
-    p_review_pipeline.add_argument("--report-file", default="", help="审查报告路径")
-    p_review_pipeline.add_argument("--save-metrics", action="store_true", help="直接写入 index.db")
+    p_plan_request = sub.add_parser("plan-request", help="生成并保存当前父任务的规划请求")
+    p_plan_request.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_plan_validate = sub.add_parser("plan-validate", help="严格校验规划 manifest 与 staging artifacts")
+    p_plan_validate.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_plan_transaction = sub.add_parser("plan-transaction", help="验证、提升并恢复规划事务")
+    p_plan_transaction.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_write_transaction = sub.add_parser("write-transaction", help="编排并恢复完整写章事务")
+    p_write_transaction.add_argument("args", nargs=argparse.REMAINDER)
+
+    p_review_pipeline = sub.add_parser("review-pipeline", help="兼容入口：仅恢复已验证的 review run")
+    p_review_pipeline.add_argument("--run-id", required=True, help="已通过 Agent/runtime/hash/schema gate 的 run id")
 
     p_placeholder_scan = sub.add_parser("placeholder-scan", help="扫描大纲/设定集未补齐占位")
     p_placeholder_scan.add_argument("--format", choices=["json", "text"], default="json", help="输出格式")
@@ -699,15 +984,17 @@ def main() -> None:
     p_master_outline_sync.add_argument("--format", choices=["json", "text"], default="json", help="输出格式")
 
     knowledge_parser = sub.add_parser("knowledge", help="时序知识查询")
-    knowledge_sub = knowledge_parser.add_subparsers(dest="knowledge_action")
+    knowledge_sub = knowledge_parser.add_subparsers(dest="knowledge_action", required=True)
 
     qs_parser = knowledge_sub.add_parser("query-entity-state", help="查询实体在指定章节的状态")
-    qs_parser.add_argument("--entity", required=True, help="实体 ID")
-    qs_parser.add_argument("--at-chapter", type=int, required=True, help="目标章节号")
+    qs_parser.add_argument("--entity", help="实体 ID 或名称；不可信文本优先使用 --request-file")
+    qs_parser.add_argument("--at-chapter", type=int, help="目标章节号")
+    qs_parser.add_argument("--request-file", help="绝对路径的 webnovel-query-request/v1 JSON")
 
     qr_parser = knowledge_sub.add_parser("query-relationships", help="查询实体在指定章节的关系")
-    qr_parser.add_argument("--entity", required=True, help="实体 ID")
-    qr_parser.add_argument("--at-chapter", type=int, required=True, help="目标章节号")
+    qr_parser.add_argument("--entity", help="实体 ID 或名称；不可信文本优先使用 --request-file")
+    qr_parser.add_argument("--at-chapter", type=int, help="目标章节号")
+    qr_parser.add_argument("--request-file", help="绝对路径的 webnovel-query-request/v1 JSON")
 
     # 兼容：允许 `--project-root` 出现在任意位置（减少 agents/skills 拼命令的出错率）
     from .cli_args import normalize_global_project_root
@@ -731,10 +1018,6 @@ def main() -> None:
     if rest[:1] == ["--"]:
         rest = rest[1:]
     rest = _strip_project_root_args(rest)
-
-    # init 是创建项目，不应该依赖/注入已存在 project_root
-    if tool == "init":
-        raise SystemExit(_run_script("init_project.py", rest))
 
     # 其余工具：统一解析 project_root 后前置给下游
     project_root = _resolve_root(args.project_root)
@@ -792,18 +1075,16 @@ def main() -> None:
         raise SystemExit(_run_script("memory_cli.py", [*forward_args, *rest]))
     if tool == "project-memory":
         raise SystemExit(_run_script("project_memory.py", [*forward_args, *rest]))
+    if tool == "plan-request":
+        raise SystemExit(_run_data_module("plan_request", [*forward_args, *rest]))
+    if tool == "plan-validate":
+        raise SystemExit(_run_data_module("plan_validator", [*forward_args, *rest]))
+    if tool == "plan-transaction":
+        raise SystemExit(_run_data_module("plan_transaction", [*forward_args, *rest]))
+    if tool == "write-transaction":
+        raise SystemExit(_run_data_module("write_transaction", [*forward_args, *rest]))
     if tool == "review-pipeline":
-        return_args = [
-            *forward_args,
-            "--chapter", str(args.chapter),
-            "--review-results", str(args.review_results),
-        ]
-        if args.metrics_out:
-            return_args.extend(["--metrics-out", str(args.metrics_out)])
-        if args.report_file:
-            return_args.extend(["--report-file", str(args.report_file)])
-        if args.save_metrics:
-            return_args.append("--save-metrics")
+        return_args = [*forward_args, "--run-id", str(args.run_id)]
         raise SystemExit(_run_script("review_pipeline.py", return_args))
     if tool == "placeholder-scan":
         raise SystemExit(_run_data_module("placeholder_scanner", [*forward_args, "--format", str(args.format)]))
@@ -814,17 +1095,117 @@ def main() -> None:
         raise SystemExit(_run_script("update_master_outline.py", return_args))
 
     if tool == "knowledge":
+        import sqlite3
+
         from .knowledge_query import KnowledgeQuery
-        from .cli_output import print_success
+        from .cli_output import build_error, print_json
+        from .query_request import QueryRequestError, load_query_request
+
+        query_type = (
+            "entity_state"
+            if args.knowledge_action == "query-entity-state"
+            else "relationships"
+        )
+
+        def emit_query_error(
+            code: str,
+            message: str,
+            *,
+            suggestion: str = "",
+            details: dict | None = None,
+        ) -> None:
+            payload = build_error(
+                code,
+                message,
+                suggestion=suggestion or None,
+                details=details,
+            )
+            payload.update(
+                {
+                    "schema_version": "webnovel-query-result/v1",
+                    "query_type": query_type,
+                    "sources": (details or {}).get("sources") or [],
+                }
+            )
+            print_json(payload)
+
+        if args.request_file:
+            if args.entity is not None or args.at_chapter is not None:
+                emit_query_error(
+                    "INVALID_QUERY_REQUEST",
+                    "--request-file 不能与 --entity/--at-chapter 混用。",
+                )
+                raise SystemExit(2)
+            try:
+                request = load_query_request(
+                    args.request_file,
+                    project_root=project_root,
+                    expected_query_types={query_type},
+                )
+            except (OSError, QueryRequestError) as exc:
+                emit_query_error("INVALID_QUERY_REQUEST", str(exc))
+                raise SystemExit(2) from None
+            args.entity = request["entity"]
+            args.at_chapter = request["at_chapter"]
+        if not isinstance(args.entity, str) or not args.entity or not isinstance(args.at_chapter, int) or args.at_chapter <= 0:
+            emit_query_error(
+                "INVALID_QUERY_INPUT",
+                "必须提供非空实体和正整数章节；不可信文本请使用 --request-file。",
+            )
+            raise SystemExit(2)
+
         kq = KnowledgeQuery(project_root)
-        if args.knowledge_action == "query-entity-state":
-            result = kq.entity_state_at_chapter(args.entity, args.at_chapter)
-            print_success(result, message="entity_state_at_chapter")
-            raise SystemExit(0)
-        elif args.knowledge_action == "query-relationships":
-            result = kq.entity_relationships_at_chapter(args.entity, args.at_chapter)
-            print_success(result, message="entity_relationships_at_chapter")
-            raise SystemExit(0)
+        try:
+            if args.knowledge_action == "query-entity-state":
+                result = kq.entity_state_at_chapter(args.entity, args.at_chapter)
+                message = "entity_state_at_chapter"
+            elif args.knowledge_action == "query-relationships":
+                result = kq.entity_relationships_at_chapter(args.entity, args.at_chapter)
+                message = "entity_relationships_at_chapter"
+            else:
+                raise SystemExit(2)
+        except (FileNotFoundError, sqlite3.Error) as exc:
+            emit_query_error(
+                "READ_MODEL_UNAVAILABLE",
+                "只读查询所需的 index.db 或表不可用。",
+                suggestion="运行 $webnovel-doctor 检查投影；不会自动创建或修复数据库。",
+                details={"path": str(project_root / ".webnovel" / "index.db"), "error": str(exc)},
+            )
+            raise SystemExit(1) from None
+        if (result.get("resolution") or {}).get("status") == "ambiguous":
+            emit_query_error(
+                "AMBIGUOUS_ENTITY",
+                "实体名称匹配到多个候选，未自动选择。",
+                suggestion="使用候选中的明确 entity_id 重新查询。",
+                details={
+                    "query": args.entity,
+                    "candidates": (result.get("resolution") or {}).get("candidates") or [],
+                    "sources": result.get("sources") or [],
+                },
+            )
+            raise SystemExit(1)
+        data = dict(result)
+        sources = list(data.pop("sources", []) or [])
+        fallback_reasons = sorted(
+            {
+                str(reason)
+                for source in sources
+                for reason in (source.get("fallback_reasons") or [])
+            }
+        )
+        print_json(
+            {
+                "schema_version": "webnovel-query-result/v1",
+                "query_type": query_type,
+                "status": "success",
+                "message": message,
+                "data": data,
+                "sources": sources,
+                "legacy_fallback": bool(fallback_reasons),
+                "fallback_reasons": fallback_reasons,
+            }
+        )
+        raise SystemExit(0)
 
     raise SystemExit(2)
 

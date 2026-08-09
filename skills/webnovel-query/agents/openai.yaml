@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Query"
+  short_description: "只读查询角色状态、关系、世界规则、伏笔和章节上下文，并标明来源"
+  default_prompt: "Use $webnovel-query to answer this project-fact question from the narrowest source with provenance and fallback labels."

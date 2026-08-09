@@ -39,3 +39,14 @@ def test_dashboard_server_rejects_explicit_workspace_root(tmp_path):
         _resolve_project_root(str(workspace))
 
     assert exc.value.code == 1
+
+
+def test_dashboard_server_never_imports_or_opens_a_browser():
+    server_path = Path(__file__).resolve().parents[3] / "dashboard" / "server.py"
+    text = server_path.read_text(encoding="utf-8")
+
+    assert "import webbrowser" not in text
+    assert "webbrowser.open" not in text
+    assert '"--ready-file"' in text
+    assert '"--instance-id"' in text
+    assert "server.run(sockets=[sock])" in text

@@ -98,6 +98,14 @@ def _find_volume_outline_file(project_root: Path, chapter_num: int) -> Path | No
     return next((path for path in candidates if path.exists()), None)
 
 
+def resolve_chapter_outline_file(project_root: Path, chapter_num: int) -> Path | None:
+    """Return the exact authored outline file consulted for one chapter."""
+    outline_dir = Path(project_root) / "大纲"
+    return _find_split_outline_file(outline_dir, chapter_num) or _find_volume_outline_file(
+        Path(project_root), chapter_num
+    )
+
+
 def _extract_outline_section(content: str, chapter_num: int) -> str | None:
     patterns = [
         rf"###\s*第\s*{chapter_num}\s*章[：:]\s*(.+?)(?=###\s*第\s*\d+\s*章|##\s|$)",

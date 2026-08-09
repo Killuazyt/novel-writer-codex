@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any, Dict, List
 
 from ..config import DataModulesConfig, get_config
@@ -31,16 +32,40 @@ class MemoryOrchestrator:
         "timeline": 6,
     }
 
-    def __init__(self, config: DataModulesConfig | None = None):
+    def __init__(self, config: DataModulesConfig | None = None, *, read_only: bool = False):
         self.config = config or get_config()
-        self.index_manager = IndexManager(self.config)
+        self.read_only = bool(read_only)
+        self.index_manager = IndexManager(self.config, read_only=self.read_only)
         self.store = ScratchpadManager(self.config)
+
+    def _safe_index_rows(
+        self,
+        method_name: str,
+        warnings: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> List[Dict[str, Any]]:
+        try:
+            method = getattr(self.index_manager, method_name)
+            return list(method(**kwargs))
+        except (OSError, sqlite3.Error) as exc:
+            if not self.read_only:
+                raise
+            warnings.append(
+                {
+                    "type": "read_model_unavailable",
+                    "source": str(self.config.index_db),
+                    "query": method_name,
+                    "detail": str(exc),
+                }
+            )
+            return []
 
     def build_memory_pack(self, chapter: int, task_type: str = "write") -> Dict[str, Any]:
         outline = load_chapter_outline(self.config.project_root, chapter, max_chars=1500)
+        query_warnings: List[Dict[str, Any]] = []
 
         working = self._build_working_memory(chapter=chapter, outline=outline)
-        episodic = self._build_episodic_memory(chapter=chapter)
+        episodic = self._build_episodic_memory(chapter=chapter, warnings=query_warnings)
         active_items = self.store.query(status="active")
         conflicts = self.store.conflicts()
         filtered = self._filter_relevant(active_items, chapter=chapter, outline=outline)
@@ -52,7 +77,9 @@ class MemoryOrchestrator:
         episodic_items = episodic[: limits["episodic"]]
         semantic_payload = [item.to_dict() for item in semantic_items]
 
-        recent_changes = self.index_manager.get_recent_state_changes(
+        recent_changes = self._safe_index_rows(
+            "get_recent_state_changes",
+            query_warnings,
             limit=max(1, int(getattr(self.config, "memory_orchestrator_recent_changes_limit", 10)))
         )
 
@@ -62,6 +89,17 @@ class MemoryOrchestrator:
             if item.category in {"world_rule", "open_loop"}
         ]
         warnings = []
+        seen_query_warnings: set[tuple[str, str, str]] = set()
+        for warning in query_warnings:
+            key = (
+                str(warning.get("source") or ""),
+                str(warning.get("query") or ""),
+                str(warning.get("detail") or ""),
+            )
+            if key in seen_query_warnings:
+                continue
+            seen_query_warnings.add(key)
+            warnings.append(warning)
         if conflicts:
             warnings.append(
                 {
@@ -171,14 +209,25 @@ class MemoryOrchestrator:
         )
         return result
 
-    def _build_episodic_memory(self, chapter: int) -> List[Dict[str, Any]]:
+    def _build_episodic_memory(
+        self,
+        chapter: int,
+        warnings: List[Dict[str, Any]] | None = None,
+    ) -> List[Dict[str, Any]]:
         _ = chapter
+        warnings = warnings if warnings is not None else []
         changes_limit = max(1, int(getattr(self.config, "memory_orchestrator_recent_changes_limit", 10)))
         rel_limit = max(1, min(20, changes_limit))
 
-        recent_changes = self.index_manager.get_recent_state_changes(limit=changes_limit)
-        recent_relationships = self.index_manager.get_recent_relationships(limit=rel_limit)
-        recent_appearances = self.index_manager.get_recent_appearances(limit=rel_limit)
+        recent_changes = self._safe_index_rows(
+            "get_recent_state_changes", warnings, limit=changes_limit
+        )
+        recent_relationships = self._safe_index_rows(
+            "get_recent_relationships", warnings, limit=rel_limit
+        )
+        recent_appearances = self._safe_index_rows(
+            "get_recent_appearances", warnings, limit=rel_limit
+        )
 
         result: List[Dict[str, Any]] = []
         for row in recent_changes:

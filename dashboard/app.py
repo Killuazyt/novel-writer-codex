@@ -6,6 +6,7 @@ Webnovel Dashboard - FastAPI 主应用
 
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -160,6 +161,21 @@ def _extract_story_chapter(path: Path) -> int:
         return 0
 
 
+def _connect_read_only(database: Path, *, row_factory: bool = False) -> sqlite3.Connection:
+    """Open an existing SQLite read model without creating or journaling it."""
+    resolved = database.resolve()
+    if Path(f"{resolved}-wal").is_file() and not Path(f"{resolved}-shm").is_file():
+        raise sqlite3.OperationalError(
+            "read-only SQLite WAL requires an existing -shm sidecar; refusing to create one"
+        )
+    uri = f"{resolved.as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.execute("PRAGMA query_only=ON")
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _inspect_vector_db(project_root: Path) -> dict:
     from data_modules.config import DataModulesConfig
 
@@ -172,7 +188,7 @@ def _inspect_vector_db(project_root: Path) -> dict:
 
     if exists and size_bytes > 0:
         try:
-            with sqlite3.connect(str(vector_db)) as conn:
+            with _connect_read_only(vector_db) as conn:
                 cursor = conn.cursor()
                 table_exists = cursor.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors'"
@@ -253,7 +269,12 @@ def _projection_status_for_commit(project_root: Path, chapter: int, commit_paylo
 # 应用工厂
 # ---------------------------------------------------------------------------
 
-def create_app(project_root: str | Path | None = None) -> FastAPI:
+def create_app(
+    project_root: str | Path | None = None,
+    *,
+    instance_id: str = "",
+    project_hash: str = "",
+) -> FastAPI:
     global _project_root
 
     if project_root:
@@ -276,6 +297,7 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         finally:
             _watcher.stop()
 
+    # This is the Dashboard HTTP API schema version, independent from plugin SemVer.
     app = FastAPI(title="Webnovel Dashboard", version="0.1.0", lifespan=_lifespan)
 
     app.add_middleware(
@@ -298,6 +320,17 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
     def story_runtime_health():
         return _build_story_runtime_health_report(_get_project_root())
 
+    @app.get("/api/runtime/instance")
+    def runtime_instance():
+        """Return the identity tuple used by the local lifecycle controller."""
+        return {
+            "schema_version": "webnovel-dashboard-instance/v1",
+            "instance_id": instance_id,
+            "project_hash": project_hash,
+            "project_root": str(_get_project_root()),
+            "pid": os.getpid(),
+        }
+
     # ===========================================================
     # API：实体数据库（index.db 只读查询）
     # ===========================================================
@@ -306,9 +339,7 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
         db_path = _webnovel_dir() / "index.db"
         if not db_path.is_file():
             raise HTTPException(404, "index.db 不存在")
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return _connect_read_only(db_path, row_factory=True)
 
     def _fetchall_safe(conn: sqlite3.Connection, query: str, params: tuple = ()) -> list[dict]:
         """执行只读查询；若目标表不存在（旧库），返回空列表。"""
@@ -917,12 +948,23 @@ def create_app(project_root: str | Path | None = None) -> FastAPI:
 
 def _walk_tree(folder: Path, root: Path) -> list[dict]:
     items = []
-    for child in sorted(folder.iterdir()):
+    try:
+        children = sorted(folder.iterdir())
+    except OSError:
+        return items
+    for child in children:
+        try:
+            if child.is_symlink() or not _is_child(child, root):
+                continue
+            is_dir = child.is_dir()
+            size = child.stat().st_size if not is_dir else 0
+        except (OSError, RuntimeError):
+            continue
         rel = str(child.relative_to(root)).replace("\\", "/")
-        if child.is_dir():
+        if is_dir:
             items.append({"name": child.name, "type": "dir", "path": rel, "children": _walk_tree(child, root)})
         else:
-            items.append({"name": child.name, "type": "file", "path": rel, "size": child.stat().st_size})
+            items.append({"name": child.name, "type": "file", "path": rel, "size": size})
     return items
 
 
@@ -930,5 +972,5 @@ def _is_child(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
         return True
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False

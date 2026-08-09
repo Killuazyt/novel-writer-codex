@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Dashboard"
+  short_description: "Control the local read-only novel dashboard safely"
+  default_prompt: "Use $webnovel-dashboard to start, inspect, or stop the current novel project read-only dashboard safely."

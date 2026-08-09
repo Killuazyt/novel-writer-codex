@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 class MemoryContractAdapter:
     """满足 MemoryContract Protocol 的具体实现。"""
 
-    def __init__(self, config: DataModulesConfig | None = None):
+    def __init__(self, config: DataModulesConfig | None = None, *, read_only: bool = False):
         self.config = config or get_config()
+        self.read_only = bool(read_only)
 
     # ------------------------------------------------------------------
     # 内部懒加载（避免在构造时就初始化所有重量级模块）
@@ -43,11 +44,11 @@ class MemoryContractAdapter:
 
     def _state_manager(self):
         from .state_manager import StateManager
-        return StateManager(self.config)
+        return StateManager(self.config, enable_sqlite_sync=not self.read_only)
 
     def _index_manager(self):
         from .index_manager import IndexManager
-        return IndexManager(self.config)
+        return IndexManager(self.config, read_only=self.read_only)
 
     def _memory_writer(self):
         from .memory.writer import MemoryWriter
@@ -59,13 +60,15 @@ class MemoryContractAdapter:
 
     def _memory_orchestrator(self):
         from .memory.orchestrator import MemoryOrchestrator
-        return MemoryOrchestrator(self.config)
+        return MemoryOrchestrator(self.config, read_only=self.read_only)
 
     # ------------------------------------------------------------------
     # 契约方法
     # ------------------------------------------------------------------
 
     def commit_chapter(self, chapter: int, result: dict) -> CommitResult:
+        if self.read_only:
+            raise PermissionError("MemoryContractAdapter is read-only; commit_chapter is blocked")
         if self._should_use_commit_mainline(result):
             return self._commit_chapter_mainline(chapter, result)
 

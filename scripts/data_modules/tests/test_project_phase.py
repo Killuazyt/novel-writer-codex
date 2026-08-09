@@ -21,6 +21,7 @@ from data_modules.project_phase import (  # noqa: E402
     PHASE_DRAFT_IN_PROGRESS,
     PHASE_INIT_READY,
     PHASE_INIT_SCAFFOLDED,
+    PHASE_PLAN_IN_PROGRESS,
     PHASE_PROJECTION_FAILED,
     PHASE_READY_TO_COMMIT,
     COMMIT_ARTIFACT_FILES,
@@ -80,6 +81,24 @@ def test_project_phase_reports_init_ready_after_init_scaffold(tmp_path):
     assert snapshot.phase == PHASE_INIT_READY
     assert snapshot.target_chapter == 1
     assert snapshot.blocking == ()
+
+
+def test_project_phase_reports_plan_in_progress_after_master_contract_only(tmp_path):
+    _make_init_ready(tmp_path)
+    _write_json(
+        tmp_path / ".story-system" / "MASTER_SETTING.json",
+        {"meta": {"contract_type": "MASTER_SETTING"}},
+    )
+
+    snapshot = resolve_project_phase(tmp_path, chapter=7)
+
+    assert snapshot.phase == PHASE_PLAN_IN_PROGRESS
+    assert snapshot.target_chapter == 7
+    assert {item.replace("\\", "/") for item in snapshot.missing_contract_files} == {
+        ".story-system/volumes/volume_001.json",
+        ".story-system/chapters/chapter_007.json",
+        ".story-system/reviews/chapter_007.review.json",
+    }
 
 
 def test_project_phase_detects_chapter_contract_ready(tmp_path):

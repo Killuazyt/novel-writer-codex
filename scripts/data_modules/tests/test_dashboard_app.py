@@ -9,6 +9,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from data_modules.config import DataModulesConfig
@@ -438,3 +439,78 @@ def test_dashboard_env_status_endpoints_report_local_rag_state(monkeypatch, tmp_
     assert "embed_api_key" in check_names
     assert "rerank_api_key" in check_names
     assert "vector_db" in check_names
+
+
+def test_dashboard_instance_endpoint_returns_lifecycle_identity(monkeypatch, tmp_path):
+    project_root = tmp_path / "book"
+    (project_root / ".webnovel").mkdir(parents=True)
+    (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
+
+    plugin_root = Path(__file__).resolve().parents[3]
+    if str(plugin_root) not in sys.path:
+        monkeypatch.syspath_prepend(str(plugin_root))
+    module = importlib.import_module("dashboard.app")
+    client = TestClient(
+        module.create_app(project_root, instance_id="a" * 32, project_hash="b" * 64)
+    )
+
+    response = client.get("/api/runtime/instance")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "schema_version": "webnovel-dashboard-instance/v1",
+        "instance_id": "a" * 32,
+        "project_hash": "b" * 64,
+        "project_root": str(project_root.resolve()),
+        "pid": __import__("os").getpid(),
+    }
+
+
+def test_dashboard_sqlite_helpers_use_read_only_uri(monkeypatch, tmp_path):
+    project_root = tmp_path / "book with 空格 & hash#"
+    (project_root / ".webnovel").mkdir(parents=True)
+    database = project_root / ".webnovel" / "index.db"
+    database.write_bytes(b"placeholder")
+    plugin_root = Path(__file__).resolve().parents[3]
+    if str(plugin_root) not in sys.path:
+        monkeypatch.syspath_prepend(str(plugin_root))
+    module = importlib.import_module("dashboard.app")
+    calls = []
+
+    class FakeConnection:
+        row_factory = None
+
+        def execute(self, statement):
+            calls.append(statement)
+            return self
+
+    def fake_connect(database_uri, *, uri=False):
+        calls.append((database_uri, uri))
+        return FakeConnection()
+
+    monkeypatch.setattr(module.sqlite3, "connect", fake_connect)
+
+    connection = module._connect_read_only(database, row_factory=True)
+
+    connect_uri, uri_enabled = calls[0]
+    assert uri_enabled is True
+    assert connect_uri.startswith("file:///")
+    assert "%20" in connect_uri and "%23" in connect_uri
+    assert connect_uri.endswith("?mode=ro")
+    assert calls[1] == "PRAGMA query_only=ON"
+    assert connection.row_factory is sqlite3.Row
+
+
+def test_dashboard_sqlite_refuses_wal_without_existing_shm(tmp_path):
+    module = importlib.import_module("dashboard.app")
+    database = tmp_path / "vectors.db"
+    with sqlite3.connect(str(database)) as conn:
+        conn.execute("CREATE TABLE vectors (id INTEGER PRIMARY KEY)")
+    Path(f"{database}-wal").write_bytes(b"synthetic recovery marker")
+    shm_path = Path(f"{database}-shm")
+    shm_path.unlink(missing_ok=True)
+
+    with pytest.raises(sqlite3.OperationalError, match="refusing to create"):
+        module._connect_read_only(database)
+
+    assert not shm_path.exists()

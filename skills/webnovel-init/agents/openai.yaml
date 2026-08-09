@@ -1,0 +1,4 @@
+interface:
+  display_name: "Webnovel Init"
+  short_description: "Preview and initialize a confirmed novel safely"
+  default_prompt: "Use $webnovel-init to collect the missing story core, preview the exact project writes, and require my real Apply answer in a host-bound current parent-rollout receipt before initializing."

@@ -59,30 +59,339 @@ def _make_cli_init_ready_project(project_root: Path) -> None:
         path.write_text("placeholder\n", encoding="utf-8")
 
 
-def test_init_does_not_resolve_existing_project_root(monkeypatch):
+@pytest.mark.parametrize(
+    "status",
+    [
+        "blocked",
+        "recoverable",
+        "failed",
+        "awaiting_user",
+        "paused",
+        "targeted_fix_pending",
+        "targeted_fix_blocked",
+        "failed_validation",
+        "failed_persistence",
+        "stale",
+    ],
+)
+def test_review_unified_cli_all_non_success_statuses_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    status: str,
+) -> None:
     module = _load_webnovel_module()
+    from data_modules import review_workflow
 
-    called = {}
+    project_root = tmp_path / f"review-{status}"
+    _make_cli_init_ready_project(project_root)
+    monkeypatch.setattr(
+        review_workflow,
+        "resume_review",
+        lambda root, *, run_id: {
+            "schema_version": "webnovel-review-workflow/v1",
+            "status": status,
+            "run_id": run_id,
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(project_root),
+            "review",
+            "resume",
+            "--run-id",
+            "rv-ch0001-cli",
+            "--format",
+            "json",
+        ],
+    )
 
-    def _fake_run_script(script_name, argv):
-        called["script_name"] = script_name
-        called["argv"] = list(argv)
-        return 0
+    with pytest.raises(SystemExit) as exc_info:
+        module.main()
+
+    assert int(exc_info.value.code or 0) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == status
+
+
+def test_review_decision_cli_is_request_file_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_webnovel_module()
+    from data_modules import review_workflow
+
+    project_root = tmp_path / "review-request-file-only"
+    _make_cli_init_ready_project(project_root)
+    request_file = tmp_path / "decision.json"
+    request_file.write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        review_workflow,
+        "decide_review",
+        lambda root, *, run_id, request_file: (
+            calls.append((run_id, str(request_file)))
+            or {
+                "schema_version": "webnovel-review-workflow/v1",
+                "status": "abandoned",
+                "run_id": run_id,
+            }
+        ),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(project_root),
+            "review",
+            "decide",
+            "--run-id",
+            "rv-ch0001-cli",
+            "--request-file",
+            str(request_file),
+            "--format",
+            "json",
+        ],
+    )
+    with pytest.raises(SystemExit) as accepted:
+        module.main()
+    assert int(accepted.value.code or 0) == 0
+    assert calls == [("rv-ch0001-cli", str(request_file))]
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(project_root),
+            "review",
+            "decide",
+            "--run-id",
+            "rv-ch0001-cli",
+            "--request-id",
+            "choice-00000000000000000000",
+            "--choice",
+            "report_only",
+        ],
+    )
+    with pytest.raises(SystemExit) as rejected:
+        module.main()
+    assert int(rejected.value.code or 0) == 2
+
+
+def test_init_does_not_resolve_existing_project_root(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules.tests.test_init_request import valid_init_payload, write_request
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("WEBNOVEL_HOME", str(home))
+    request_file = write_request(home, valid_init_payload(workspace))
 
     def _fail_resolve(_explicit_project_root=None):
         raise AssertionError("init 子命令不应触发 project_root 解析")
 
     monkeypatch.setenv("WEBNOVEL_PROJECT_ROOT", r"D:\invalid\root")
-    monkeypatch.setattr(module, "_run_script", _fake_run_script)
     monkeypatch.setattr(module, "_resolve_root", _fail_resolve)
-    monkeypatch.setattr(sys, "argv", ["webnovel", "init", "proj-dir", "测试书", "修仙"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["webnovel", "init", "--config-json", str(request_file), "--dry-run"],
+    )
 
     with pytest.raises(SystemExit) as exc:
         module.main()
 
     assert int(exc.value.code or 0) == 0
-    assert called["script_name"] == "init_project.py"
-    assert called["argv"] == ["proj-dir", "测试书", "修仙"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "webnovel-init-preview/v1"
+    assert payload["git_mode"] == "off"
+    assert not (workspace / "星火长夜").exists()
+
+
+def test_init_unified_cli_preview_apply_and_stale_token_exit_codes(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules.tests.test_init_request import valid_init_payload, write_request
+    from data_modules.tests.test_init_workflow import _write_apply_authorization, tree_snapshot
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "中文 工作区 (CLI) & B"
+    workspace.mkdir()
+    target = workspace / "星火长夜"
+    monkeypatch.setenv("WEBNOVEL_HOME", str(home))
+    request_file = write_request(home, valid_init_payload(workspace))
+
+    def run_cli(argv: list[str]) -> tuple[int, dict]:
+        monkeypatch.setattr(sys, "argv", ["webnovel", *argv])
+        with pytest.raises(SystemExit) as exc:
+            module.main()
+        return int(exc.value.code or 0), json.loads(capsys.readouterr().out)
+
+    before = tree_snapshot(workspace)
+    code, preview = run_cli(
+        ["init", "--config-json", str(request_file), "--dry-run"]
+    )
+    assert code == 0
+    assert preview["status"] == "ready"
+    assert preview["git_mode"] == "off"
+    assert tree_snapshot(workspace) == before
+    assert not target.exists()
+    authorization = _write_apply_authorization(request_file, preview)
+
+    code, missing_authorization = run_cli(
+        [
+            "init",
+            "--config-json",
+            str(request_file),
+            "--apply",
+            "--git-mode",
+            "off",
+            "--preview-token",
+            preview["preview_token"],
+        ]
+    )
+    assert code == 2
+    assert missing_authorization["code"] == "invalid_request"
+    assert not target.exists()
+
+    code, invalid = run_cli(
+        [
+            "init",
+            "--config-json",
+            str(request_file),
+            "--apply",
+            "--preview-token",
+            preview["preview_token"],
+            "--authorization-json",
+            str(authorization),
+        ]
+    )
+    assert code == 2
+    assert invalid["code"] == "invalid_request"
+    assert not target.exists()
+
+    code, result = run_cli(
+        [
+            "init",
+            "--config-json",
+            str(request_file),
+            "--apply",
+            "--git-mode",
+            "off",
+            "--preview-token",
+            preview["preview_token"],
+            "--authorization-json",
+            str(authorization),
+        ]
+    )
+    assert code == 0
+    assert result["status"] == "success"
+    assert result["git"]["mode"] == "off"
+    after_apply = tree_snapshot(target)
+
+    code, stale = run_cli(
+        [
+            "init",
+            "--config-json",
+            str(request_file),
+            "--apply",
+            "--git-mode",
+            "off",
+            "--preview-token",
+            preview["preview_token"],
+            "--authorization-json",
+            str(authorization),
+        ]
+    )
+    assert code == 1
+    assert stale["code"] == "init_blocked"
+    assert tree_snapshot(target) == after_apply
+
+
+def test_init_unified_cli_invalid_and_blocked_preview_are_zero_write(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules.tests.test_init_request import valid_init_payload, write_request
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "星火长夜"
+    monkeypatch.setenv("WEBNOVEL_HOME", str(home))
+    payload = valid_init_payload(workspace)
+    payload["reference_candidate"] = {
+        "status": "proposed",
+        "candidate_id": "unconfirmed",
+        "confidence": 0.99,
+        "transformation_notes": "must not persist",
+    }
+    request_file = write_request(home, payload)
+
+    def run_cli(argv: list[str]) -> tuple[int, dict]:
+        monkeypatch.setattr(sys, "argv", ["webnovel", *argv])
+        with pytest.raises(SystemExit) as exc:
+            module.main()
+        return int(exc.value.code or 0), json.loads(capsys.readouterr().out)
+
+    code, blocked = run_cli(
+        ["init", "--config-json", str(request_file), "--dry-run"]
+    )
+    assert code == 1
+    assert blocked["status"] == "blocked"
+    assert blocked["reference_candidate_status"] == "proposed"
+    assert not target.exists()
+
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    code, invalid = run_cli(
+        ["init", "--config-json", str(outside), "--dry-run"]
+    )
+    assert code == 2
+    assert invalid["code"] == "invalid_request"
+    assert not target.exists()
+
+
+def test_init_unified_cli_rejects_ambiguous_global_project_root(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules.tests.test_init_request import valid_init_payload, write_request
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    other = tmp_path / "other-book"
+    workspace.mkdir()
+    other.mkdir()
+    monkeypatch.setenv("WEBNOVEL_HOME", str(home))
+    request_file = write_request(home, valid_init_payload(workspace))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(other),
+            "init",
+            "--config-json",
+            str(request_file),
+            "--dry-run",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert int(exc.value.code or 0) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["code"] == "invalid_request"
+    assert not (workspace / "星火长夜").exists()
 
 
 def test_extract_context_forwards_with_resolved_project_root(monkeypatch, tmp_path):
@@ -856,31 +1165,42 @@ def test_review_pipeline_builds_artifacts(tmp_path):
     (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
 
     review_results_path = tmp_path / "review_results.json"
-    review_results_path.write_text(
-        json.dumps(
+    raw_review = {
+        "chapter": 20,
+        "issues": [
             {
-                "issues": [
-                    {
-                        "severity": "critical",
-                        "category": "timeline",
-                        "location": "第2段",
-                        "description": "时间线回跳",
-                        "evidence": "上章深夜，本章突然中午",
-                        "fix_hint": "补时间过渡",
-                        "blocking": True,
-                    },
-                    {
-                        "severity": "medium",
-                        "category": "ai_flavor",
-                        "location": "第5段",
-                        "description": "'稳住心神'出现2次",
-                        "fix_hint": "替换为具体动作",
-                    },
-                ],
-                "summary": "1个阻断，1个中等",
+                "severity": "critical",
+                "category": "timeline",
+                "location": "第2段",
+                "description": "时间线回跳",
+                "evidence": "上章深夜，本章突然中午",
+                "fix_hint": "补时间过渡",
+                "blocking": True,
             },
-            ensure_ascii=False,
-        ),
+            {
+                "severity": "medium",
+                "category": "logic",
+                "location": "第5段",
+                "description": "因果缺口",
+                "evidence": "没有前提却直接得到结论",
+                "fix_hint": "补一处既有事实依据",
+                "blocking": False,
+            },
+        ],
+        "issues_count": 2,
+        "blocking_count": 1,
+        "has_blocking": True,
+        "dimension_results": [
+            {"dimension": "setting", "conclusion": "pass"},
+            {"dimension": "timeline", "conclusion": "发现1个问题"},
+            {"dimension": "continuity", "conclusion": "pass"},
+            {"dimension": "character", "conclusion": "pass"},
+            {"dimension": "logic", "conclusion": "发现1个问题"},
+        ],
+        "summary": "1个阻断，1个中等",
+    }
+    review_results_path.write_text(
+        json.dumps(raw_review, ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -904,18 +1224,14 @@ def test_review_pipeline_builds_artifacts(tmp_path):
     assert payload["metrics"]["overall_score"] < 100
     assert payload["metrics"]["report_file"] == "审查报告/第20章.md"
 
-    persisted_review = json.loads(review_results_path.read_text(encoding="utf-8"))
-    assert persisted_review["chapter"] == 20
-    assert persisted_review["issues_count"] == 2
-    assert persisted_review["blocking_count"] == 1
-    assert persisted_review["has_blocking"] is True
+    # Artifact construction is pure; production persistence is ledger-gated.
+    assert json.loads(review_results_path.read_text(encoding="utf-8")) == raw_review
 
 
 def test_review_pipeline_forwards_with_resolved_project_root(monkeypatch, tmp_path):
     module = _load_webnovel_module()
 
     book_root = (tmp_path / "book").resolve()
-    review_results = (tmp_path / "review_results.json").resolve()
     called = {}
 
     def _fake_resolve(explicit_project_root=None):
@@ -936,15 +1252,8 @@ def test_review_pipeline_forwards_with_resolved_project_root(monkeypatch, tmp_pa
             "--project-root",
             str(tmp_path),
             "review-pipeline",
-            "--chapter",
-            "18",
-            "--review-results",
-            str(review_results),
-            "--metrics-out",
-            str(tmp_path / "metrics.json"),
-            "--report-file",
-            "审查报告/第18章.md",
-            "--save-metrics",
+            "--run-id",
+            "rv-ch0018-fixture",
         ],
     )
 
@@ -956,15 +1265,8 @@ def test_review_pipeline_forwards_with_resolved_project_root(monkeypatch, tmp_pa
     assert called["argv"] == [
         "--project-root",
         str(book_root),
-        "--chapter",
-        "18",
-        "--review-results",
-        str(review_results),
-        "--metrics-out",
-        str(tmp_path / "metrics.json"),
-        "--report-file",
-        "审查报告/第18章.md",
-        "--save-metrics",
+        "--run-id",
+        "rv-ch0018-fixture",
     ]
 
 
@@ -1016,6 +1318,59 @@ def test_project_memory_forwards_with_resolved_project_root(monkeypatch, tmp_pat
     ]
 
 
+@pytest.mark.parametrize(
+    ("tool", "module_name", "tail"),
+    [
+        (
+            "plan-request",
+            "plan_request",
+            ["--volume", "1", "--start-chapter", "1", "--end-chapter", "3", "--parent-model", "parent", "--save"],
+        ),
+        ("plan-validate", "plan_validator", ["--manifest", "plan-manifest.json"]),
+        ("plan-transaction", "plan_transaction", ["status", "--run-id", "plan-v1-test"]),
+        (
+            "plan-transaction",
+            "plan_transaction",
+            [
+                "accept-batch",
+                "--request-file",
+                "C:/trusted/plan-request.json",
+                "--fragment-file",
+                "C:/trusted/batch-000001-000010.json",
+            ],
+        ),
+        ("write-transaction", "write_transaction", ["status", "--run-id", "write-ch0001-test"]),
+    ],
+)
+def test_plan_and_write_modules_forward_through_unified_cli(
+    monkeypatch, tmp_path, tool, module_name, tail
+):
+    module = _load_webnovel_module()
+    book_root = (tmp_path / "book").resolve()
+    called = {}
+
+    monkeypatch.setattr(module, "_resolve_root", lambda explicit_project_root=None: book_root)
+
+    def _fake_run_data_module(name, argv):
+        called["module"] = name
+        called["argv"] = list(argv)
+        return 0
+
+    monkeypatch.setattr(module, "_run_data_module", _fake_run_data_module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["webnovel", "--project-root", str(tmp_path), tool, *tail],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    assert int(exc.value.code or 0) == 0
+    assert called["module"] == module_name
+    assert called["argv"] == ["--project-root", str(book_root), *tail]
+
+
 def test_project_memory_add_pattern_escapes_quotes(tmp_path):
     _ensure_scripts_on_path()
     import project_memory as project_memory_module
@@ -1046,7 +1401,7 @@ def test_project_memory_add_pattern_escapes_quotes(tmp_path):
     assert payload["patterns"][0]["source_chapter"] == 3
 
 
-def test_review_pipeline_main_creates_output_directories(tmp_path):
+def test_review_pipeline_main_only_resumes_accepted_run(monkeypatch, tmp_path, capsys):
     _ensure_scripts_on_path()
     import review_pipeline as review_pipeline_module
 
@@ -1054,70 +1409,31 @@ def test_review_pipeline_main_creates_output_directories(tmp_path):
     (project_root / ".webnovel").mkdir(parents=True, exist_ok=True)
     (project_root / ".webnovel" / "state.json").write_text("{}", encoding="utf-8")
 
-    review_results_path = tmp_path / "review_results.json"
-    review_results_path.write_text(
-        json.dumps(
-            {
-                "issues": [
-                    {
-                        "severity": "low",
-                        "category": "other",
-                        "location": "p1",
-                        "description": "小问题",
-                    }
-                ],
-                "summary": "轻微",
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    import data_modules.review_workflow as workflow_module
 
-    metrics_out = project_root / ".webnovel" / "tmp" / "review" / "metrics.json"
-    report_file = project_root / "审查报告" / "第9章审查报告.md"
+    called = {}
+
+    def fake_persist(root, *, run_id):
+        called.update({"root": Path(root), "run_id": run_id})
+        return {"schema_version": "webnovel-review-workflow/v1", "status": "persisted", "run_id": run_id}
+
+    monkeypatch.setattr(workflow_module, "persist_review_run", fake_persist)
 
     old_argv = sys.argv
     sys.argv = [
         "review_pipeline",
         "--project-root",
         str(project_root),
-        "--chapter",
-        "9",
-        "--review-results",
-        str(review_results_path),
-        "--metrics-out",
-        str(metrics_out),
-        "--report-file",
-        "审查报告/第9章审查报告.md",
-        "--save-metrics",
+        "--run-id",
+        "rv-ch0009-fixture",
     ]
     try:
         review_pipeline_module.main()
     finally:
         sys.argv = old_argv
 
-    assert metrics_out.is_file()
-    assert report_file.is_file()
-    report_text = report_file.read_text(encoding="utf-8")
-    assert "# 第9章审查报告" in report_text
-    assert "## 作者视图" in report_text
-    assert "本章结论：⚠️建议改" in report_text
-    assert "小问题" in report_text
-    assert "## 其他问题" in report_text
-
-    persisted_review = json.loads(review_results_path.read_text(encoding="utf-8"))
-    assert persisted_review["chapter"] == 9
-    assert persisted_review["issues_count"] == 1
-    assert persisted_review["blocking_count"] == 0
-    assert persisted_review["has_blocking"] is False
-
-    import sqlite3
-
-    with sqlite3.connect(project_root / ".webnovel" / "index.db") as conn:
-        row = conn.execute(
-            "SELECT start_chapter, end_chapter, report_file FROM review_metrics"
-        ).fetchone()
-    assert row == (9, 9, "审查报告/第9章审查报告.md")
+    assert called == {"root": project_root, "run_id": "rv-ch0009-fixture"}
+    assert json.loads(capsys.readouterr().out)["status"] == "persisted"
 
 
 def test_webnovel_skill_flow_runs_story_contract_context_and_review_pipeline_with_stubbed_vector_model(
@@ -1243,6 +1559,8 @@ def test_webnovel_skill_flow_runs_story_contract_context_and_review_pipeline_wit
             module.main()
         return int(exc.value.code or 0)
 
+    # The legacy unbound pipeline is rejected; production Review requires a
+    # prepared run plus explicit Codex runtime evidence.
     assert (
         _run_webnovel(
             [
@@ -1331,8 +1649,196 @@ def test_webnovel_skill_flow_runs_story_contract_context_and_review_pipeline_wit
                 "审查报告/第3章.md",
             ]
         )
-        == 0
+        == 2
     )
-    assert metrics_out.is_file()
-    metrics_payload = json.loads(metrics_out.read_text(encoding="utf-8"))
-    assert metrics_payload["issues_count"] == 1
+    assert not metrics_out.is_file()
+
+
+def test_dashboard_status_cli_returns_stable_json(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules import dashboard_lifecycle
+
+    project_root = tmp_path / "dashboard book"
+    _make_cli_init_ready_project(project_root)
+    expected_root = project_root.resolve()
+    monkeypatch.setattr(
+        dashboard_lifecycle,
+        "dashboard_status",
+        lambda root: {
+            "schema_version": dashboard_lifecycle.RESULT_SCHEMA,
+            "project_root": str(Path(root).resolve()),
+            "runtime_dir": "isolated-runtime",
+            "status": "not_running",
+            "ok": True,
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "dashboard",
+            "status",
+            "--format",
+            "json",
+            "--project-root",
+            str(project_root),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert int(exc.value.code or 0) == 0
+    assert payload["schema_version"] == dashboard_lifecycle.RESULT_SCHEMA
+    assert payload["project_root"] == str(expected_root)
+    assert payload["status"] == "not_running"
+
+
+def test_dashboard_start_cli_forwards_safe_dynamic_port(monkeypatch, tmp_path, capsys):
+    module = _load_webnovel_module()
+    from data_modules import dashboard_lifecycle
+
+    project_root = tmp_path / "dashboard book"
+    _make_cli_init_ready_project(project_root)
+    called = {}
+
+    def fake_start(root, *, host, port):
+        called.update({"root": Path(root), "host": host, "port": port})
+        return {
+            "schema_version": dashboard_lifecycle.RESULT_SCHEMA,
+            "project_root": str(Path(root).resolve()),
+            "runtime_dir": "isolated-runtime",
+            "status": "running",
+            "ok": True,
+            "errors": [],
+            "pid": 123,
+            "port": 45678,
+            "url": "http://127.0.0.1:45678",
+        }
+
+    monkeypatch.setattr(dashboard_lifecycle, "dashboard_start", fake_start)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(project_root),
+            "dashboard",
+            "start",
+            "--host",
+            "localhost",
+            "--port",
+            "0",
+            "--no-browser",
+            "--format",
+            "json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert int(exc.value.code or 0) == 0
+    assert called == {"root": project_root.resolve(), "host": "localhost", "port": 0}
+    assert payload["status"] == "running"
+
+
+def test_knowledge_cli_missing_database_and_table_return_schema_error_without_creation(
+    monkeypatch, tmp_path, capsys
+):
+    module = _load_webnovel_module()
+    project_root = tmp_path / "query book"
+    _make_cli_init_ready_project(project_root)
+    db_path = project_root / ".webnovel" / "index.db"
+
+    def run_query():
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "webnovel",
+                "--project-root",
+                str(project_root),
+                "knowledge",
+                "query-entity-state",
+                "--entity",
+                "韩立",
+                "--at-chapter",
+                "1",
+            ],
+        )
+        with pytest.raises(SystemExit) as exc:
+            module.main()
+        return int(exc.value.code or 0), json.loads(capsys.readouterr().out)
+
+    code, missing_db = run_query()
+    assert code == 1
+    assert missing_db["schema_version"] == "webnovel-query-result/v1"
+    assert missing_db["query_type"] == "entity_state"
+    assert missing_db["error"]["code"] == "READ_MODEL_UNAVAILABLE"
+    assert not db_path.exists()
+
+    import sqlite3
+
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute("CREATE TABLE entities (id TEXT PRIMARY KEY, canonical_name TEXT)")
+    code, missing_table = run_query()
+    assert code == 1
+    assert missing_table["error"]["code"] == "READ_MODEL_UNAVAILABLE"
+    assert db_path.is_file()
+
+
+def test_knowledge_cli_ambiguous_entity_returns_candidates_in_query_schema(
+    monkeypatch, tmp_path, capsys
+):
+    import sqlite3
+
+    module = _load_webnovel_module()
+    project_root = tmp_path / "query book"
+    _make_cli_init_ready_project(project_root)
+    db_path = project_root / ".webnovel" / "index.db"
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute("CREATE TABLE entities (id TEXT PRIMARY KEY, canonical_name TEXT)")
+        connection.execute(
+            "CREATE TABLE state_changes (id INTEGER PRIMARY KEY, entity_id TEXT, field TEXT, new_value TEXT, chapter INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE relationship_events (id INTEGER PRIMARY KEY, from_entity TEXT, to_entity TEXT, type TEXT, description TEXT, chapter INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO entities (id, canonical_name) VALUES (?, ?)",
+            [("hanli-a", "韩立"), ("hanli-b", "韩立")],
+        )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "webnovel",
+            "--project-root",
+            str(project_root),
+            "knowledge",
+            "query-entity-state",
+            "--entity",
+            "韩立",
+            "--at-chapter",
+            "1",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert int(exc.value.code or 0) == 1
+    assert payload["schema_version"] == "webnovel-query-result/v1"
+    assert payload["query_type"] == "entity_state"
+    assert payload["error"]["code"] == "AMBIGUOUS_ENTITY"
+    assert {item["entity_id"] for item in payload["error"]["details"]["candidates"]} == {
+        "hanli-a",
+        "hanli-b",
+    }

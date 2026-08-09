@@ -1,0 +1,42 @@
+{
+  "schema_version": "webnovel-query-cases/v1",
+  "cases": [
+    {
+      "id": "entity_state",
+      "command": ["knowledge", "query-entity-state", "--request-file", "<ABSOLUTE_QUERY_REQUEST_JSON>"],
+      "request": {"schema_version": "webnovel-query-request/v1", "query_type": "entity_state", "entity": "韩立", "at_chapter": 35},
+      "source_kind": "sqlite_read_model",
+      "path_suffix": ".webnovel/index.db",
+      "line_applicability": "not_applicable"
+    },
+    {
+      "id": "relationships",
+      "command": ["knowledge", "query-relationships", "--request-file", "<ABSOLUTE_QUERY_REQUEST_JSON>"],
+      "request": {"schema_version": "webnovel-query-request/v1", "query_type": "relationships", "entity": "韩立", "at_chapter": 35},
+      "source_kind": "sqlite_read_model",
+      "path_suffix": ".webnovel/index.db",
+      "line_applicability": "not_applicable"
+    },
+    {
+      "id": "world_rules",
+      "command": ["memory-contract", "--read-only", "--with-provenance", "--request-file", "<ABSOLUTE_QUERY_REQUEST_JSON>", "query-rules"],
+      "request": {"schema_version": "webnovel-query-request/v1", "query_type": "world_rules", "domain": "力量体系"},
+      "source_kind": "derived_memory",
+      "path_suffix": ".webnovel/memory_scratchpad.json",
+      "fallback_label": "legacy_projection_fallback"
+    },
+    {
+      "id": "open_loops",
+      "command": ["memory-contract", "--read-only", "--with-provenance", "get-open-loops", "--status", "active"],
+      "source_kind": "derived_memory",
+      "path_suffix": ".webnovel/memory_scratchpad.json",
+      "fallback_label": "legacy_projection_fallback"
+    },
+    {
+      "id": "context",
+      "command": ["memory-contract", "--read-only", "--with-provenance", "load-context", "--chapter", "35"],
+      "source_kind": "story_contract_or_derived",
+      "fallback_label": "legacy_projection_fallback"
+    }
+  ]
+}

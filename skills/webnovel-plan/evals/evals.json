@@ -1,0 +1,50 @@
+{
+  "schema_version": "webnovel-plan-evals/v1",
+  "skill_name": "webnovel-plan",
+  "fixture_only": true,
+  "live_host_gate_satisfied": false,
+  "cases": [
+    {
+      "id": "accepted_batch_immutable",
+      "prompt": "Resume $webnovel-plan after the first batch was accepted and the second batch failed validation.",
+      "expect": [
+        "each request batch is written to its fixed fragment path and passed to plan-transaction accept-batch by request-file and fragment-file only",
+        "accepted receipts bind the request hash and exact fragment bytes",
+        "only the unaccepted batch is reworked",
+        "changing an accepted fragment requires a new run instead of deleting or forging its receipt"
+      ]
+    },
+    {
+      "id": "incomplete_batch_set_blocks_marker",
+      "prompt": "Use $webnovel-plan to validate a manifest while one requested chapter batch has no accepted receipt.",
+      "expect": [
+        "marker is blocked until accepted batches provide non-overlapping complete request coverage",
+        "manifest chapters equal the accepted fragment objects in request order",
+        "missing empty stale cross-run or tampered batches fail closed",
+        "planning prose never enters argv"
+      ]
+    },
+    {
+      "id": "current_truth_and_parent_binding",
+      "prompt": "Check whether a previously applied $webnovel-plan run is still complete.",
+      "expect": [
+        "the current top-level parent rollout matches host-owned CODEX_THREAD_ID",
+        "validation apply and all fixed stage truth sources are re-read",
+        "master candidate state planned entry chapter contracts and the target prewrite gate are verified",
+        "deleted or modified truth becomes stale even when immutable receipts remain"
+      ]
+    },
+    {
+      "id": "trusted_authored_conflict_decision",
+      "prompt": "Use $webnovel-plan when apply and a later state stage each find different author-written content.",
+      "expect": [
+        "each conflict returns a fixed request file finite keep replace cancel choices and an exact parent marker with exit code 1",
+        "the user answer stays in the same CODEX_THREAD_ID rollout and plan-transaction decision reads only the request file",
+        "the receipt binds validation run stage before and after hashes parent model effort and the rollout prefix through the answer",
+        "only replace may overwrite after lock-held revalidation while keep and cancel write zero novel facts",
+        "bare overwrite tokens and receipts replayed across stages or changed scopes fail closed",
+        "apply stage status and replay reverify the bound decision receipt path and hash"
+      ]
+    }
+  ]
+}

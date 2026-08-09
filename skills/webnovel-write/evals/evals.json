@@ -1,0 +1,100 @@
+{
+  "schema_version": "webnovel-write-evals/v1",
+  "skill_name": "webnovel-write",
+  "fixture_only": true,
+  "live_host_gate_satisfied": false,
+  "cases": [
+    {
+      "id": "default_verified_chain",
+      "mode": "default",
+      "expect": [
+        "context, draft, reviewer, final and data stages require verified runtime evidence",
+        "each Agent launch binds the exact current-run predecessor lineage and writer manifest inputs",
+        "artifact signatures and parsed JSON come from the same stable byte snapshot",
+        "five reviewer dimensions are present",
+        "promotion precedes data and precommit",
+        "accepted commit and five projections precede completion"
+      ]
+    },
+    {
+      "id": "fast_explicit_dimensions",
+      "mode": "fast",
+      "expect": [
+        "setting, timeline and continuity are reviewed",
+        "character and logic are explicitly skipped",
+        "anti_ai_force_check still passes"
+      ]
+    },
+    {
+      "id": "minimal_fresh_skip",
+      "mode": "minimal",
+      "expect": [
+        "a fresh run-scoped no-review artifact is required",
+        "reviewer and review pipeline receive immutable skip receipts",
+        "a retry after the first skip receipt appends only the missing receipt",
+        "context, writer, data and all gates remain required"
+      ]
+    },
+    {
+      "id": "model_or_evidence_mismatch",
+      "mode": "default",
+      "expect": [
+        "missing evidence, fallback model or non-medium effort fails closed",
+        "a static agent declaration cannot advance the transaction",
+        "no production completion receipt is written"
+      ]
+    },
+    {
+      "id": "postcommit_resume",
+      "mode": "default",
+      "expect": [
+        "after accepted commit no creative stage can rerun",
+        "failed projections resume at projections only",
+        "postcommit and backup resume independently"
+      ]
+    },
+    {
+      "id": "backup_authorization",
+      "mode": "default",
+      "expect": [
+        "non-Git projects return structured skipped status",
+        "a public scope challenge is not user authorization",
+        "Git backup requires an exact allowlist and trusted parent decision receipt",
+        "retryable registry recovery never initializes Git or mutates the normal index or branch"
+      ]
+    },
+    {
+      "id": "blocking_review_receipts",
+      "mode": "default",
+      "expect": [
+        "clean review permits polish only",
+        "writer v1 targeted_fix is rejected while historical draft and polish remain compatible",
+        "writer v2 result and manifest carry identical resolutions",
+        "draft and polish resolutions are empty while targeted_fix receipts bind issue occurrence index and sha256",
+        "trusted parent choice binds the exact review and blocker occurrences",
+        "only exact per-issue resolution coverage derives a zero-blocking commit review while preserving the original review"
+      ]
+    },
+    {
+      "id": "current_parent_binding_required",
+      "mode": "default",
+      "expect": [
+        "caller supplied parent identity is not trusted current-task evidence",
+        "CODEX_THREAD_ID must be a UUID with one trusted rollout match",
+        "the current parent session is top-level and every mutable public stage rechecks it",
+        "cross-parent rollout reuse is rejected"
+      ]
+    },
+    {
+      "id": "current_truth_stale",
+      "mode": "default",
+      "expect": [
+        "completion and every status re-read mutable truth",
+        "a missing promotion receipt may recover only when the target exactly equals this run verified final artifact",
+        "authored conflicts require a current-parent recovery receipt and only replace may write",
+        "missing or replaced artifact commit projection postcommit or backup becomes stale",
+        "immutable receipts alone cannot report production completion"
+      ]
+    }
+  ]
+}

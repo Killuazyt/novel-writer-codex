@@ -1,0 +1,40 @@
+{
+  "skill_name": "webnovel-review",
+  "schema_version": "webnovel-review-evals/v1",
+  "live_runtime_gate": "pending_external_codex_task_evidence",
+  "evals": [
+    {
+      "id": "single-clean",
+      "prompt": "Use $webnovel-review to review chapter 4 in full mode.",
+      "expectations": [
+        "prepares a run-specific request artifact",
+        "binds prepare and accept to the same host-provided CODEX_THREAD_ID UUID",
+        "uses the managed webnovel_reviewer child Agent",
+        "requires explicit Codex rollout identity for gpt-5.6-luna medium",
+        "persists one run-specific result, metrics file, report, and matching database row",
+        "does not write a global previous-chapter tmp artifact"
+      ]
+    },
+    {
+      "id": "blocking-no-answer",
+      "prompt": "Review chapter 5, but do not choose a blocking resolution yet.",
+      "expectations": [
+        "returns exactly targeted_fix, report_only, and abandon",
+        "binds the options to an exact assistant marker and reads the real user answer from a trusted parent rollout receipt matching both prepare-time CODEX_THREAD_ID and reviewer child evidence",
+        "rejects caller-supplied choice fields, wrong-parent receipts, stale receipts, and replayed receipts",
+        "does not change chapter text",
+        "does not create a public report or review_metrics row before a choice"
+      ]
+    },
+    {
+      "id": "range-recovery",
+      "prompt": "Review chapters 6 through 10 and resume after a simulated database-busy failure.",
+      "expectations": [
+        "accepts five chapters and rejects six",
+        "runs one reviewer at a time",
+        "stops at the first blocker or failure until a scoped trusted parent-rollout decision",
+        "resumes database persistence without rerunning the accepted reviewer"
+      ]
+    }
+  ]
+}

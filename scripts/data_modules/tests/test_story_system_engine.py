@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import csv
-import uuid
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -19,11 +19,8 @@ def _write_csv(path, headers, rows):
 
 
 def _make_local_tmp_path() -> Path:
-    base_dir = Path(__file__).resolve().parents[4] / ".tmp_story_system_engine"
-    base_dir.mkdir(exist_ok=True)
-    tmp_dir = base_dir / f"case_{uuid.uuid4().hex}"
-    tmp_dir.mkdir()
-    return tmp_dir
+    # The isolated runner replaces tempfile.mkdtemp with its guarded session root.
+    return Path(tempfile.mkdtemp(prefix="story-system-engine-"))
 
 
 def test_story_system_routes_explicit_genre_and_collects_anti_patterns():

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -17,6 +19,7 @@ def _ensure_scripts_on_path() -> None:
 _ensure_scripts_on_path()
 
 import data_modules.doctor as doctor_module  # noqa: E402
+from data_modules.codex_agent_runtime import snapshot_protected_state  # noqa: E402
 from data_modules.projection_log import append_projection_run  # noqa: E402
 
 
@@ -110,3 +113,78 @@ def test_doctor_blocks_pending_projection_log_run(tmp_path, monkeypatch):
     assert matches
     assert matches[0]["status"] == "error"
     assert report["ok"] is False
+
+
+def test_doctor_recognizes_planning_and_writing_stages(tmp_path, monkeypatch):
+    _make_init_ready(tmp_path)
+    _write_json(
+        tmp_path / ".story-system" / "MASTER_SETTING.json",
+        {"meta": {"contract_type": "MASTER_SETTING"}},
+    )
+    monkeypatch.setattr(doctor_module, "_python_checks", lambda: [])
+
+    planning = doctor_module.build_doctor_report(tmp_path, chapter=7)
+
+    assert planning["phase"] == "plan_in_progress"
+    assert planning["expected_profile"]["target_chapter"] == 7
+    assert planning["ok"] is False
+    assert {
+        item["id"]
+        for item in planning["checks"]
+        if item["status"] == "error"
+    } >= {"file.contract.volume", "file.contract.chapter", "file.contract.review"}
+
+    _make_contracts(tmp_path, chapter=7)
+    ready = doctor_module.build_doctor_report(tmp_path, chapter=7)
+    assert ready["phase"] == "chapter_contract_ready"
+    assert ready["ok"] is True
+
+    (tmp_path / "正文" / "第0007章.md").write_text("写作中\n", encoding="utf-8")
+    writing = doctor_module.build_doctor_report(tmp_path, chapter=7)
+    assert writing["phase"] == "draft_in_progress"
+    assert writing["ok"] is True
+
+
+def test_doctor_deep_json_and_text_are_read_only_on_complex_windows_path(tmp_path, monkeypatch):
+    project = tmp_path / "中文 项目 (甲) & 乙 #7"
+    _make_init_ready(project)
+    _make_contracts(project, chapter=7)
+    webnovel_dir = project / ".webnovel"
+    with sqlite3.connect(str(webnovel_dir / "index.db")) as conn:
+        conn.execute("CREATE TABLE chapters (chapter INTEGER PRIMARY KEY)")
+    with sqlite3.connect(str(webnovel_dir / "vectors.db")) as conn:
+        conn.execute("CREATE TABLE vectors (id INTEGER PRIMARY KEY)")
+    monkeypatch.setattr(doctor_module, "_python_checks", lambda: [])
+
+    before = snapshot_protected_state(project)
+    report = doctor_module.build_doctor_report(project, chapter=7, deep=True)
+    json_text = doctor_module.format_doctor_report(report, "json")
+    human_text = doctor_module.format_doctor_report(report, "text")
+    after = snapshot_protected_state(project)
+
+    assert before == after
+    assert json.loads(json_text)["mode"] == "deep"
+    assert "webnovel-doctor" in human_text
+    assert any(item["id"] == "dashboard.frontend.dist" for item in report["checks"])
+
+
+def test_doctor_sqlite_connections_use_read_only_uri(tmp_path, monkeypatch):
+    database = tmp_path / "索引 #1 & (只读).db"
+    with sqlite3.connect(str(database)) as conn:
+        conn.execute("CREATE TABLE chapters (chapter INTEGER PRIMARY KEY)")
+
+    real_connect = sqlite3.connect
+    calls = []
+
+    def recording_connect(database_arg, *args, **kwargs):
+        calls.append((database_arg, dict(kwargs)))
+        return real_connect(database_arg, *args, **kwargs)
+
+    monkeypatch.setattr(doctor_module.sqlite3, "connect", recording_connect)
+
+    ok, count, error = doctor_module._sqlite_table_count(database, "chapters")
+
+    assert (ok, count, error) == (True, 0, "")
+    assert calls
+    assert calls[0][1].get("uri") is True
+    assert str(calls[0][0]).endswith("?mode=ro")
