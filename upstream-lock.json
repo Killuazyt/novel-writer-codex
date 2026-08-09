@@ -29,13 +29,13 @@
       },
       {
         "glob": "webnovel-writer/agents/**",
-        "reason": "Claude agents require Codex project-agent migration.",
-        "disposition": "deferred_to_m3"
+        "reason": "Claude agent responsibilities were adapted into five canonical Codex contracts and project-agent generation in M3; the Claude files remain excluded.",
+        "disposition": "adapted_in_m3"
       },
       {
         "glob": "webnovel-writer/skills/**",
-        "reason": "Claude skills require Codex skill migration.",
-        "disposition": "deferred_to_m3"
+        "reason": "All eight upstream business-skill source adapters were created across M4-M6; downstream-only setup was created in M3. Plan authored-conflict and Write blocking/body-conflict decision branches are implemented with scope-bound receipts; only controlled/full-write live host gates remain pending and fail closed rather than falling back to Claude behavior.",
+        "disposition": "adapted_m4_m6_live_gates_pending"
       },
       {
         "glob": ".claude-plugin/marketplace.json",

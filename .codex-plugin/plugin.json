@@ -1,6 +1,6 @@
 {
   "name": "novel-writer-codex",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "面向 Codex 的长篇网文创作工作流移植（迁移中）",
   "author": {
     "name": "Killuazyt",
@@ -18,7 +18,7 @@
   "interface": {
     "displayName": "Novel Writer Codex",
     "shortDescription": "Codex 长篇网文创作工作流（迁移中）",
-    "longDescription": "将 webnovel-writer 的 Story System、记忆、审查与写作流程移植到 Codex。当前已建立插件外壳、共享运行时与 hooks，业务 Skills 尚在适配。",
+    "longDescription": "将 webnovel-writer 的 Story System、记忆、审查与写作流程移植到 Codex。九个 Skill 源适配与五个项目 Agent 合同均已落地；受控写、完整写与真实宿主用户裁决仍按 fail-closed 门逐项验收，当前尚未发布。",
     "developerName": "Killuazyt",
     "category": "Productivity",
     "capabilities": [],

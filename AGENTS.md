@@ -13,12 +13,13 @@
 - 上游仓库：`https://github.com/lingfengQAQ/webnovel-writer`；冻结基线为 `master@2041abad78211e29a67a2f0c64b2a97a747dce57`，上游版本标记 `6.2.1`。
 - 目标 GitHub 仓库：`https://github.com/Killuazyt/novel-writer-codex.git`。
 
-### 当前停点（2026-08-07）
+### 当前停点（2026-08-09）
 
-- M0.1、M0、M1、M2 已完成并通过本地 gate；当前按范围停在 M2，下一项是 `M3`，未经用户明确要求不得提前创建生产 Skills 或 Agents。
-- M2 已完成严格项目定位、Codex pointer/registry、参考资料 provenance、Codex package/version/release 校验和离线 upstream check/prepare；Story System 与小说数据合同未改。
-- 当前安全收集 862 项；`full` 为 789 passed、73 deselected，`scripts/data_modules` coverage 90.19%，9 个真实宿主保护路径前后零变化。
-- 已有 `upstream` remote 与 `upstream-lock.json`；仍未创建 9 个生产 Codex Skill、4 个项目 Agent、CI、Marketplace、tag 或 release。
+- 当前代码版本为 `0.3.0` 本机 Full-write Beta，交付目标已收缩为“本机 Windows Codex 可持续写小说”。M0.1–M4 的自动 gate 已完成；M5/M6 自动核心与三类可信父任务裁决 receipt 已落地。当前停在本机插件点击安装、新任务发现和真实完整写作 live gate；M7/M8 的 CI、发布 Marketplace、多平台、外部安装、tag/release 暂缓。
+- 9/9 个 Skill 源适配和 5/5 个 Agent 合同/生成结果均存在；Plan authored-conflict、Write blocking `targeted_fix` 逐 issue resolution 和作者正文/合同冲突恢复均已实现 scope-bound decision receipt，裸 token/字符串、跨任务、过期或篡改 receipt 继续 fail-closed。
+- 当前安全收集 1893 项；`full` 为 1771 passed、15 skipped、107 deselected，`scripts/data_modules` coverage 90.41%，9 个真实宿主保护路径前后零变化。
+- 真实安装后的新 Codex 顶层任务发现、Init Apply/Adopt、Review/Plan/Write 用户裁决、真实四 Luna 写章链与 projection 故障恢复尚未采集；不得用静态 validator、fixture 或子 Agent 自报替代。Setup Apply 已创建 5 个项目 Agent，复查为 current；默认 personal marketplace 与本机插件源已建立，尚待以正确版本刷新后由用户在 App 中点击安装并打开新任务。Git backup live smoke 暂不阻断非 Git 本机写作；CI、发布 Marketplace、tag 与 release 不属于当前完成定义。
+- 用户已明确授权本轮与 M5/M6、本机目标修正和插件版本相关改动的 stage、commit、push；未授权 tag、release、PR 或其他外部发布。
 - 全量 pytest 必须使用 `scripts/run_tests.ps1` 或显式 bootstrap 的定向命令；不得运行会绕过隔离、契约筛选或真实宿主状态保护的原始 pytest。
 - 不要沿用聊天中的口头进度推断完成状态；先检查计划复选框、执行日志、工作树和实际测试证据。
 
@@ -27,7 +28,8 @@
 - 这是仅维护 Codex 的下游；`.claude` 和 `CLAUDE_*` 只允许只读兼容 fallback，新流程不得写入 `.claude`。
 - `.story-system`、`.webnovel`、`正文`、`设定集`、`大纲` 的业务契约保持兼容，不迁移小说数据。
 - 最终交付 9 个 Codex Skill：保留 8 个 `$webnovel-*` 名称并新增 `$webnovel-setup`。
-- 4 个专用 Agent 必须由 `$webnovel-setup` 显式安装为项目级 `.codex/agents/*.toml`。缺失或合同哈希过期时阻断相关 Skill，不允许主 Agent 静默模拟。
+- 5 个专用 Agent 必须由 `$webnovel-setup` 显式安装为项目级 `.codex/agents/*.toml`。写章链的 context/writer/reviewer/data 固定 `gpt-5.6-luna` / `medium`，deconstruction 与 `$webnovel-plan` 继承当前主对话模型；缺失、模型不可用或合同哈希过期时阻断，不允许主 Agent 静默模拟或改用其他模型。
+- 业务裁决由主对话提供 2–3 个有限选项并等待用户回答；系统文件、网络或命令权限审批仍交给 Codex 原生 permission/approval，二者不得混用。
 - `$webnovel-init` 默认 `--git-mode off`；初始化 Git、创建提交、push、tag、release 或任何外部发布都必须取得用户的单独明确授权。
 - `$webnovel-review` 先实现单章版，1.0 前再完成一次最多 5 章、逐章串行且可恢复的范围审查。
 - Windows 和中文路径是首要支持场景；Ubuntu 是正式辅助平台。所有文本读写显式使用 UTF-8，Skill/YAML/TOML 必须 UTF-8 无 BOM。

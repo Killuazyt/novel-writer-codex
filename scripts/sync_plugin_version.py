@@ -27,6 +27,10 @@ README_VERSION_PATTERN = re.compile(
     r"<!--\s*novel-writer-codex-version:\s*(?P<version>[^\s]+)\s*-->",
     re.IGNORECASE,
 )
+README_EXPECTED_VERSION_PATTERN = re.compile(
+    r"(?P<prefix>--expected-version\s+)(?P<version>[^\s`]+)",
+    re.IGNORECASE,
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -68,6 +72,12 @@ def find_readme_version(content: str) -> str | None:
     return str(match.group("version")) if match else None
 
 
+def find_readme_expected_versions(content: str) -> list[str]:
+    """Return every explicit version used by README validation commands."""
+
+    return [str(match.group("version")) for match in README_EXPECTED_VERSION_PATTERN.finditer(content)]
+
+
 def get_readme_current_version(content: str) -> str:
     """Return the README marker or raise for callers that require one."""
 
@@ -87,14 +97,13 @@ def get_readme_badge_version(content: str) -> str:
 
 
 def update_readme_version(content: str, version: str) -> str:
-    """Update an existing marker; M2 never inserts release documentation."""
+    """Update existing version markers without inserting release documentation."""
 
-    if not README_VERSION_PATTERN.search(content):
-        return content
-    return README_VERSION_PATTERN.sub(
-        f"<!-- novel-writer-codex-version: {version} -->",
-        content,
-        count=1,
+    updated = README_VERSION_PATTERN.sub(
+        f"<!-- novel-writer-codex-version: {version} -->", content, count=1
+    )
+    return README_EXPECTED_VERSION_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{version}", updated
     )
 
 
@@ -182,9 +191,16 @@ def check_versions(
         mismatches.append(f"expected={expected_version}, plugin.json={plugin_version}")
 
     if readme_path.is_file():
-        readme_version = find_readme_version(load_text(readme_path))
+        readme_content = load_text(readme_path)
+        readme_version = find_readme_version(readme_content)
         if readme_version is not None and readme_version != plugin_version:
             mismatches.append(f"plugin.json={plugin_version}, README.md={readme_version}")
+        for expected_version in find_readme_expected_versions(readme_content):
+            if expected_version != plugin_version:
+                mismatches.append(
+                    "plugin.json="
+                    f"{plugin_version}, README.md --expected-version={expected_version}"
+                )
 
     if marketplace_path.is_file():
         marketplace_payload = load_json(marketplace_path)

@@ -6,15 +6,34 @@
 
 `F:\codexnovel\novel-writer-codex\docs\IMPLEMENTATION_PLAN.md`
 
-本文件已于 2026-08-07 以 UTF-8 无 BOM 回读校验，并继续作为唯一详细实施清单；[PORTING.md](PORTING.md) 只保留简要迁移状态。本轮实施已完成 M2，并按范围停止，不进入 M3。
+本文件已于 2026-08-09 以 UTF-8 无 BOM 回读校验，并继续作为唯一详细实施清单；[PORTING.md](PORTING.md) 只保留简要迁移状态。M0.1–M4 的自动 gate 已通过；当前在 M5/M6 补齐本机写作必需的用户裁决与事务恢复。自 2026-08-09 起，当前交付目标由“面向其他用户发布”收缩为“本机可持续写小说”；M7、M8 中的 CI、Marketplace、多平台、外部安装、tag 与 release 暂缓，不再阻断本机可用。
 
-### 最终目标
+### 当前交付目标：本机可持续写小说
+
+当前代码版本定为 `0.3.0` 本机 Full-write Beta，对应已经落地的 M6 自动核心；本机安装副本使用 `0.3.0+codex.local-<cachebuster>` 触发 Codex 刷新。该版本号不表示已创建 `v0.3.0` tag、GitHub Release 或面向其他用户发布。
+
+当前只以本机 Windows Codex Desktop、当前用户和本地小说项目为支持范围。完成定义是：
+
+- 本机能够发现 9 个 `$webnovel-*` Skill，并由 `$webnovel-setup` 安装、校验 5 个项目 Agent。
+- 能在不手拼 Python/shell 命令的正常对话中完成：初始化/打开小说、规划、查询、学习、审查、写章和 Dashboard。
+- Plan authored-conflict、Review blocking、Write blocking `targeted_fix`、作者正文/合同冲突均使用当前父任务的可信有限选择 receipt；未回答、跨任务、过期或篡改 receipt 必须 fail-closed。
+- 至少完成一次真实本机 Init → Plan → Review/Write 链；写章的 context、writer、reviewer、data 必须实际为 `gpt-5.6-luna` / `medium`，父任务不得代写或静默 fallback。
+- 章节提交、五项 projection、postcommit 和非 Git backup skip 能从真源回读；现场 projection 失败只补 projection，不重跑正文或 Agent。
+- Windows 中文、空格、括号、`&` 路径可用；旧小说数据合同不迁移，新流程不写 `.claude`。
+- 保留隔离全量测试、UTF-8/BOM、事实数据保护和 `git diff --check` 等本机安全 gate。
+
+当前明确不要求：Ubuntu/Python 跨平台矩阵、受限 symlink 正式能力矩阵、GitHub Actions、Repo Marketplace、外部用户安装/升级/卸载、上游同步演练、clean archive、tag、release、push 或 GitHub 上传。Git backup live smoke 也不是本机非 Git 写作的完成前提；如以后启用，仍需用户单独授权。
+
+### 长期保留目标（本机稳定后再恢复）
 
 把上游 `lingfengQAQ/webnovel-writer` 移植为 Codex 专用插件，在不迁移小说数据、不改变 Story System 业务契约的前提下，实现：
 
 - 9 个 Codex Skill：保留 8 个 `$webnovel-*` 名称，新增 `$webnovel-setup`。
-- 4 个项目级 Codex Agent。
+- 5 个项目级 Codex Agent，其中新增独立 `webnovel_writer`，把正文起草与润色从主对话中剥离。
 - 原有初始化、规划、查询、学习、审查、写章和 Dashboard 功能。
+- 用户可在 Codex 对话中使用自然语言或显式 `$webnovel-*` 命令驱动完整流程，不需要手工拼接 Python 或 shell 命令。
+- 保留上游所有有语义价值的用户裁决点：需要作者决定时暂停并给出有限选项，收到选择后再继续。
+- 规划由当前主对话模型完成；写章链和审查链固定委派给 `gpt-5.6-luna` 子 Agent，不受主对话所选模型影响。
 - Windows 中文路径完整支持。
 - GitHub 仓库及 Repo Marketplace 分发。
 - 独立 SemVer、CI、上游漂移检查和可重复发布流程。
@@ -26,6 +45,13 @@
 - `.story-system`、`.webnovel`、`正文`、`设定集`、`大纲`保持完全兼容，不做数据迁移。
 - 专用 Agent 采用项目级 `.codex/agents/*.toml`，由 `$webnovel-setup` 显式安装。
 - Agent 缺失或版本不匹配时阻断相关 Skill，不静默降级为主 Agent 模拟。
+- 主对话只负责理解命令、规划、编排、展示状态和向用户提问；不得自行代写正文、润色正文或伪造审查结论。
+- `$webnovel-plan` 始终使用任务创建时用户选定的主对话模型，不为规划固定另一个模型。
+- `$webnovel-write` 调用的 context、writer、reviewer、data Agent，以及 `$webnovel-review` 调用的 reviewer，固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "medium"`；父会话模型或 reasoning effort 不得覆盖它们。
+- `webnovel_deconstruction_agent` 服务于初始化与创意分析，继承主对话模型；它不参与正文起草、润色或章节审查。
+- 指定 Agent、模型或 reasoning effort 不可用时必须阻断并报告 `model_unavailable` 或 `agent_unavailable`，禁止回退到父模型或其他模型后继续产出。
+- 子 Agent 隔离的优化目标是减少主对话上下文污染和昂贵主模型 token；由于每个子 Agent 都会产生独立调用，不承诺全链路 token 总量一定低于单 Agent。
+- 创作/流程裁决与系统权限审批分离：前者由 Skill 给出 2–3 个有限选项并等待用户回答，后者交给 Codex 的 permission/approval 机制，二者不得互相冒充。
 - `$webnovel-init` 默认不初始化 Git，必须询问用户。
 - `$webnovel-review` 先交付单章，1.0 前补齐一次最多 5 章的串行范围审查。
 - 文档以中文为主，命令、文件名、Schema 字段保持英文。
@@ -37,14 +63,55 @@
 |---|---|
 | Git | `main` 已初始化，`origin` 已配置，尚无提交 |
 | 上游 | `master@2041abad78211e29a67a2f0c64b2a97a747dce57`，版本标记 `6.2.1` |
-| 文件 | 目标 346 个有效文件；320 个与上游同哈希，10 个已适配，62 个待迁，16 个 Codex 新增 |
+| 文件 | 原 4 Agent 方案目标 346 个有效文件；320 个与上游同哈希，10 个已适配，62 个待迁，16 个 Codex 新增；新增 writer 后由 M3 重算 package allowlist 与目标数 |
 | Skills | `0/9` |
-| Agents | `0/4` |
+| Agents | `0/5` |
 | 测试 | 收集 746 项；当前全量套件含 Claude 契约且可能访问真实 `~/.claude`，不能直接作为 CI |
 | 已通过 | Codex Adapter、Plugin manifest、Hook 单测、核心 commit/projection/write-gate 定向测试 |
 | 发布能力 | 尚无 CI、Marketplace、release note、上游 lock 或真实安装 smoke |
 
-官方约束以当前的 [插件打包](https://developers.openai.com/plugins/build/plugins)、[Skill](https://learn.chatgpt.com/docs/build-skills)、[项目级 Agent](https://learn.chatgpt.com/docs/agent-configuration/subagents)和 [Hooks](https://learn.chatgpt.com/docs/hooks)文档为准。
+### 2026-08-07 M3 本地状态
+
+| 项目 | 当前状态 |
+|---|---|
+| 文件 | 387 个有效文件：261 个与冻结上游同哈希、69 个已适配、57 个 Codex 新增；上游 Claude Agent 树已在 M3 完成职责迁移，剩余 48 个上游 Skill 文件留待 M4–M6 |
+| Skills | `1/9`：`$webnovel-setup` 已实现，其余 8 个业务 Skill 未开放 |
+| Agents | `5/5` 合同与 TOML 生成完成；实际项目安装后回读 `current` |
+| 测试 | 安全收集 1055 项；`full` 为 978 passed、2 skipped、75 deselected；coverage 90.50% |
+| 真实模型 | Sol/Terra 两个父任务下共 8 个固定角色 rollout 均为 `gpt-5.6-luna / medium`；父任务独立规划 smoke 工具调用为 0 |
+| M3 blocker | 无；`/hooks` 未信任→持久化信任两阶段现场证据尚未采集，但仅作为可选安全增强保留；CLI WindowsApps 探针因 WinError 5 blocked，未冒充 live pass |
+
+### 2026-08-08 M4 本地状态
+
+| 项目 | 当前状态 |
+|---|---|
+| 文件 | 冻结上游 Doctor/Query/Dashboard 共 6 个 Skill 文件已适配；其余 42 个上游 Skill 文件留待 M5–M6 |
+| Skills | `4/9`：Setup、Doctor、Query、Dashboard 已实现；其余 5 个业务 Skill 未开放 |
+| 测试 | 安全收集 1132 项；`full` 为 1042 passed、3 skipped、87 deselected；coverage 90.34% |
+| Windows smoke | 中文、空格、括号、`&` 路径下 Doctor/Query 安全边界及 Dashboard 动态端口、两个 200、穿越 403、stop、事实零变化通过 |
+| 发布门 | 真实安装后的新 Codex 顶层任务发现证据因本轮禁止创建顶层任务而未采集；0.1.0 未发布 |
+
+### 2026-08-08 M5/M6 本地状态
+
+| 项目 | 当前状态 |
+|---|---|
+| Skills | `9/9` 源适配已落地；Learn、Review 单章、Init 与 Plan 绿地路径的自动实现完成；Review 范围实现完成；Write 仍是部分实现 |
+| M5 | Learn、Review 单章、Init、Plan 的 schema、路径、锁、原子写、回滚、receipt 与 current-truth 自动 gate 已通过；Plan authored-conflict 可信 decision receipt 已实现，真实父/子 rollout 与用户选择现场证据待采集 |
+| M6 | default/fast/minimal 写章事务、四 Agent 精确 lineage、run-bound artifact、blocking `targeted_fix` 逐 issue resolution、作者正文/合同冲突恢复、commit/projection/postcommit/backup 真源回读与断点恢复均已自动实现；完整 live 链仍待完成 |
+| 测试 | 该轮历史证据为安全收集 1821 项、1699 passed、15 skipped、107 deselected；2026-08-09 最新结果见下方本机可用状态 |
+| 发布门 | 未创建新 Codex 顶层任务，未执行真实 Git backup/tag，未做 Ubuntu/symlink 能力矩阵；未 commit、push、tag、release 或上传 GitHub |
+
+### 2026-08-09 本机可用自动实现状态
+
+| 项目 | 当前状态 |
+|---|---|
+| M5/M6 实现 | Plan authored-conflict、Write blocking `targeted_fix` 逐 issue resolution、作者正文/合同冲突恢复三类可信父任务 receipt 已完成；保留/取消/仅状态具有可恢复 terminal overlay |
+| 测试 | 安全收集 1893 项；`full` 为 1771 passed、15 skipped、107 deselected；coverage 90.41%；9 个真实宿主保护路径零变化 |
+| 本机 Setup | 用户已选择 Apply；5 个项目 Agent 已创建，再次 check 返回 `current`，无冲突、无覆盖备份。按合同仍需在插件安装后的新顶层任务验证发现 |
+| 本机插件发现 | 默认 personal marketplace 与本机插件源已通过 Plugin Creator 建立并验证；Windows Store `codex.exe plugin add` 仍为 Access denied。用户在 App 安装页看到旧 `0.1.0` 后主动退出，等待仓库提升到 `0.3.0`、推送并刷新本机 cachebuster 后再点击安装 |
+| 暂缓项 | CI、发布 Marketplace、Ubuntu/其他平台、外部用户安装、commit/push/tag/release 与 GitHub 上传继续不属于当前完成定义 |
+
+官方约束以当前的 [插件打包](https://developers.openai.com/plugins/build/plugins)、[Skill](https://learn.chatgpt.com/docs/build-skills)、[项目级 Agent](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna)和 [Hooks](https://learn.chatgpt.com/docs/hooks)文档为准。
 
 ## 2. 架构与公共接口
 
@@ -124,13 +191,15 @@ python -X utf8 scripts/webnovel.py codex-setup
 - 创建以下项目 Agent：
 
   - `webnovel_context_agent`
+  - `webnovel_writer`
   - `webnovel_reviewer`
   - `webnovel_data_agent`
   - `webnovel_deconstruction_agent`
 
 - Agent 角色合同以 `references/agents/*.md` 为唯一语义真源，由生成器产生 `.codex/agents/*.toml`。
-- TOML 不固定模型和 reasoning effort，继承父会话。
-- context、reviewer、deconstruction 使用 `read-only`；data 使用 `workspace-write`，但只允许生成三份 `.webnovel/tmp` artifact。
+- context、writer、reviewer、data 的 TOML 固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "medium"`；deconstruction 不写这两个字段并继承父会话。
+- context、reviewer、deconstruction 使用 `read-only`；writer、data 使用 `workspace-write`。
+- writer 只能在 `.webnovel/tmp/write-runs/<run_id>/` 写入本轮 `draft.md`、`polished.md` 和最小 manifest；不得直接写最终正文、Story System 或其他 canon。data 只允许生成三份既定 `.webnovel/tmp` artifact。
 - 管理记录保存到 `.codex/novel-writer-codex/managed-agents.json`。
 - 已管理但过期的 Agent，先备份到 `.codex/novel-writer-codex/backups/<timestamp>/` 再更新。
 - 同名但不受本插件管理的 Agent 一律拒绝覆盖；不提供宽泛 `--force`。
@@ -156,10 +225,34 @@ JSON 结果包含：
 Agent 使用规则：
 
 - `review` 必须发现 reviewer。
-- `write default/fast` 必须发现 context、reviewer、data。
-- `write minimal` 仍必须发现 context、data，只跳过 reviewer。
+- `write default/fast` 必须发现 context、writer、reviewer、data。
+- `write minimal` 仍必须发现 context、writer、data，只跳过 reviewer。
 - `init` 无参考作品时可独立运行；提供参考文本时必须发现 deconstruction。
 - 缺失或哈希过期时统一阻断，并引导 `$webnovel-setup` → 新任务；禁止兼容模式冒充专用 Agent。
+
+### 对话交互与模型路由合同
+
+用户只需要在 Codex 主对话中提出“初始化小说”“规划第 N 卷”“写第 N 章”“审查第 N 章”等请求；主 Agent 负责把自然语言或显式 `$webnovel-*` 调用路由到对应 Skill。Skill 内部命令是实现细节，不要求用户手工执行。
+
+需要作者裁决时，由主 Agent 统一提问，子 Agent 不直接与用户争夺对话控制：
+
+- 每次只问 1–3 个短问题；每题提供 2–3 个互斥选项，把推荐项放在第一位并说明影响，同时允许用户自由输入。
+- 当前客户端提供结构化选择控件时优先使用；未提供时退化为语义等价的编号选项并等待回答，而不是擅自采用默认值。
+- Setup apply、初始化写入/Git、规划冲突或覆盖、创作方向分歧、不可自动修复的 blocking issue、作者手改正文恢复和范围审查是否继续，均属于必须等待用户的裁决点。
+- 无语义分歧、可安全重试或纯状态提示不重复询问，避免确认疲劳。
+
+模型路由固定为：
+
+| 工作 | 执行者 | 模型来源 | 主对话可见内容 |
+|---|---|---|---|
+| 理解命令、规划、用户裁决、流程编排 | 主 Agent | 当前对话模型 | 需求、计划、状态和精简汇总 |
+| 写前上下文压缩 | `webnovel_context_agent` | 固定 `gpt-5.6-luna` / `medium` | 仅任务书摘要与 artifact 引用 |
+| 正文起草、定点修复、润色 | `webnovel_writer` | 固定 `gpt-5.6-luna` / `medium` | 路径、hash、字数和状态，不回传整章正文 |
+| 单章/范围章节审查 | `webnovel_reviewer` | 固定 `gpt-5.6-luna` / `medium` | 结构化问题摘要和 artifact 引用 |
+| 写后事实提取 | `webnovel_data_agent` | 固定 `gpt-5.6-luna` / `medium` | 三份 artifact 的路径、hash 和校验状态 |
+| 初始化参考作品拆解 | `webnovel_deconstruction_agent` | 当前对话模型 | 精简候选与风险摘要 |
+
+每次 Agent 调用必须在 run ledger 中记录 `agent_name`、请求的 `model`、实际报告的 `model`、reasoning effort、输入 artifact/hash、输出 artifact/hash 和状态。实际模型与合同不一致时，本次结果作废并阻断；不得把非 Luna 产物写入正文、审查报告或事实提交链。
 
 ### 其他新增或调整接口
 
@@ -299,25 +392,34 @@ Agent 使用规则：
 - `refactor(runtime): add host-neutral path and config resolution`
 - `test(packaging): add Codex package and upstream drift validators`
 
-### M3：Skill 公共框架、Setup 与四个 Agent
+### M3：Skill 公共框架、Setup、交互合同与五个 Agent
 
 任务：
 
-- [ ] 新增 `$webnovel-setup`。
-- [ ] 为每个 Skill 保留仅含 `name`、`description` 的 frontmatter。
-- [ ] 为每个 Skill 增加 `agents/openai.yaml`，default prompt 显式使用 `$skill-name`。
-- [ ] 建立共享 Codex runtime 调用说明，去除 `export`、`$PWD`、`$()`、`cat/test/find/seq/printf`、`/dev/null` 及 shell 循环。
-- [ ] 移植四个 Agent 合同并生成项目 TOML。
-- [ ] 加入 TOML/合同哈希漂移校验和 Setup 幂等测试。
-- [ ] 验证 Hooks 在未信任时被跳过、信任后触发；runtime 在两种情况下都安全。
+- [x] 新增 `$webnovel-setup`。
+- [x] 为每个 Skill 保留仅含 `name`、`description` 的 frontmatter。
+- [x] 为每个 Skill 增加 `agents/openai.yaml`，default prompt 显式使用 `$skill-name`。
+- [x] 建立共享 Codex runtime 调用说明，去除 `export`、`$PWD`、`$()`、`cat/test/find/seq/printf`、`/dev/null` 及 shell 循环。
+- [x] 移植上游四个 Agent 合同，新增独立 writer 合同，并生成五个项目 TOML。
+- [x] 在 context、writer、reviewer、data TOML 中固定 `gpt-5.6-luna` / `medium`，保留 deconstruction 继承当前对话模型；生成器和 managed hash 必须覆盖模型字段。
+- [x] 建立统一有限选项交互协议，并把 Claude `AskUserQuestion` 语义映射到 Codex 当前客户端可用的结构化选择或编号对话 fallback。
+- [x] 加入 TOML/合同哈希漂移校验和 Setup 幂等测试。
+- [x] 加入模型可用性、实际模型回读和禁止父模型 fallback 的真实新任务 smoke；只解析 TOML 不算通过。
+- [x] 将 Hooks 未信任→持久化信任现场 smoke 保留为可选安全增强且不再阻断里程碑；runtime、受保护路径、合同 hash 与 schema 安全边界继续作为强制自动 gate。
+
+当前状态：M3 代码、合同、fixture、自动 gate、真实双父模型路由与父任务独立规划 smoke 均已通过，M3 标记为 complete。`/hooks` 持久化信任现场 smoke 尚未采集，作为可选安全增强保留；若补做，仍不得用 `--dangerously-bypass-hook-trust`、静态 TOML、canned fixture 或子 Agent 自报替代真实证据。
 
 Agent 验收：
 
 - context：只返回完整任务书，零写入，缺少事实时返回 blocker。
+- writer：只根据最小任务包在本轮 staging 目录生成起草/润色 artifact，返回路径、hash、字数和状态，不向主对话回传整章正文，不直接改 canon。
 - reviewer：严格 JSON、五维字段齐全、无评分；非法 JSON 最多重试一次，之后阻断。
 - data：只生成 `fulfillment_result.json`、`disambiguation_result.json`、`extraction_result.json`。
 - deconstruction：书名但无可靠正文时必须 `quality.passed=false`，不得编造或创建 canon。
-- 四个 Agent 都通过伪系统提示、忽略指令等 prompt-injection fixture。
+- 五个 Agent 都通过伪系统提示、忽略指令等 prompt-injection fixture。
+- 用至少两个不同的父会话模型分别触发 write/review smoke，实际 writer/reviewer/context/data 始终报告 `gpt-5.6-luna`；再用错误/不可用模型 fixture 验证阻断且不产生可提交 artifact。
+- 规划 smoke 不启动 writer/reviewer，规划内容由父会话模型生成；切换父会话模型不会改变写章/审查模型路由。
+- 用户裁决 fixture 覆盖结构化选择与编号 fallback；未收到回答前不得继续写入，收到回答后只能执行所选分支。
 - TOML sandbox 不能作为唯一保护；runtime、路径校验和前后哈希共同构成边界。
 
 建议提交：
@@ -329,9 +431,11 @@ Agent 验收：
 
 迁移：
 
-- [ ] `$webnovel-doctor`
-- [ ] `$webnovel-query`
-- [ ] `$webnovel-dashboard`
+- [x] `$webnovel-doctor`
+- [x] `$webnovel-query`
+- [x] `$webnovel-dashboard`
+
+M4 验收时状态：源码实现、Skill/runtime 合同、隔离 full gate 和 Windows 中文路径真实 loopback smoke 均已通过。由于禁止创建 Codex App 顶层任务，“真实安装后的新任务发现”证据没有采集且不以静态 validator 或子 Agent 自报替代；所以 M4 实现完成，但发布门尚未全部关闭，不创建 `v0.1.0`。后续 M5/M6 的本地实现不倒填或伪造这条 live 证据。
 
 Doctor 验收：
 
@@ -360,10 +464,10 @@ Dashboard 验收：
 
 发布门：
 
-- 三个 Skill 在真实安装后的新 Codex 任务中可发现。
-- Windows 中文路径 smoke 通过。
-- Hooks 未信任/已信任两种状态均验证。
-- 达标后才允许在用户授权下创建 `v0.1.0`。
+- [ ] 三个 Skill 在真实安装后的新 Codex 顶层任务中可发现；本轮因用户明确禁止创建顶层任务而未采集。
+- [x] Windows 中文路径 Doctor/Query/Dashboard smoke 通过。
+- [x] runtime、路径、合同 hash、schema 与事实数据前后哈希强制门通过；Hooks 未信任/已信任两阶段现场 smoke 继续作为可选增强。
+- [ ] 达标并另获用户授权后才允许创建 `v0.1.0`；本轮不创建。
 
 建议提交：
 
@@ -374,10 +478,11 @@ Dashboard 验收：
 
 迁移：
 
-- [ ] `$webnovel-learn`
-- [ ] `$webnovel-review` 单章版
-- [ ] `$webnovel-init`
-- [ ] `$webnovel-plan`
+- [x] `$webnovel-learn` 自动实现与合同测试。
+- [x] `$webnovel-review` 单章版自动实现、严格 ledger、有限选择和落库恢复。
+- [x] `$webnovel-init` missing-only preview/apply、回滚与 Git 边界自动实现。
+- [x] `$webnovel-plan` 绿地规划、批次 receipt、parent-only validate、提升、回滚与真源 status。
+- [x] `$webnovel-plan` authored-conflict 的可信父任务有限选择 receipt 自动实现与对抗测试；现场验证仍列在下方 live gate。
 
 Learn 验收：
 
@@ -389,6 +494,7 @@ Learn 验收：
 Review 验收：
 
 - reviewer 严格输出 setting、timeline、continuity、character、logic 五维结果。
+- reviewer 的 run ledger 实际模型必须为 `gpt-5.6-luna` / `medium`；不匹配时不生成报告或落库。
 - 每个 issue 有 evidence、fix hint 和 blocking 标记。
 - metrics JSON、报告和数据库一致。
 - 不复用上一章 tmp artifact。
@@ -408,6 +514,7 @@ Init 验收：
 
 Plan 验收：
 
+- 规划只在当前主对话执行，继承用户创建任务时选定的模型；不得调用 writer/reviewer 代替规划，也不得把规划模型固定为 Luna。
 - 输出卷节拍表、卷时间线、详细大纲和总纲写回。
 - 每章具有时间字段、1 个 CBN、2–4 个 CPN、1 个 CEN 及最多 4 个必须覆盖节点。
 - 时间单调、倒计时正确、相邻 `CEN → CBN` 承接。
@@ -415,6 +522,13 @@ Plan 验收：
 - blocker 未裁决或 `plan-validate` 失败时，不更新 state 和 Story System。
 - 批次失败只重做失败批次，不覆盖已通过结果。
 - 目标首章最终通过 `write-gate --stage prewrite`。
+
+M5 尚未关闭的现场/发布门：
+
+- [ ] 在真实安装后的新 Codex 顶层任务中发现 M5 Skills；当前任务内文件、validator 或子 Agent 不替代发现证据。
+- [ ] Init 在真实父 rollout 中完成一次 `Apply`；可选参考路径另需真实 deconstruction 子 Agent 与 `Adopt`/`Discard`/`Cancel` 用户回答证据。
+- [ ] Review 以真实 `gpt-5.6-luna / medium` reviewer 完成单章，并验证 blocking 三选一的父任务用户回答 receipt。
+- [ ] Plan 由当前真实父模型完成 marker/validate/greenfield apply，并对已实现的 authored-conflict receipt 做覆盖现场 smoke。
 
 建议提交：
 
@@ -427,9 +541,9 @@ Plan 验收：
 
 迁移：
 
-- [ ] `$webnovel-write`
-- [ ] `$webnovel-review` 范围审查
-- [ ] 全事务故障恢复
+- [x] `$webnovel-write`：default/fast/minimal、blocking 定点修复逐 issue receipt、作者正文/合同冲突恢复与真源恢复自动实现；完整 live 链未验收。
+- [x] `$webnovel-review` 一次最多 5 章、逐章串行且可恢复的范围审查自动实现。
+- [ ] 全事务故障恢复：自动 fault injection 与 commit 后幂等恢复已覆盖，仍缺真实 projection 失败/retry、作者裁决和 Git backup 现场链。
 
 写章顺序固定，不允许并步：
 
@@ -437,10 +551,10 @@ Plan 验收：
 preflight
 → contract refresh / prewrite
 → context agent
-→ draft
+→ writer agent draft staging
 → reviewer
 → review-pipeline
-→ polish
+→ writer agent targeted fix / polish staging
 → data agent artifacts
 → precommit
 → chapter-commit
@@ -458,6 +572,10 @@ preflight
 验收：
 
 - reviewer 每章最多一轮；blocking 未处理不得提交。
+- context、writer、reviewer、data 的实际模型都必须为 `gpt-5.6-luna` / `medium`；父会话使用任何可用模型时都不得改变该路由。
+- draft、定点修复和 polish 全部由 writer Agent 完成；主 Agent 只编排和提升已验证 staging artifact，禁止自行补写或改写正文。
+- 主对话只接收任务摘要、artifact 路径/hash、字数、问题摘要和状态；完整任务书、正文与长审查明细留在子 Agent/artifact，避免污染规划上下文。
+- 任一 Luna Agent 不可用、超时、实际模型不匹配或输出越界时立即阻断，不回退父模型；失败 staging artifact 不得提升为最终正文。
 - 三份 data artifact 必须通过现有 Schema validator。
 - `pending` 消歧、遗漏必写节点和 anti-AI blocker 必须阻断。
 - precommit 早于 chapter-commit，postcommit 晚于 commit。
@@ -475,13 +593,36 @@ preflight
 - 默认遇到 blocker/失败即停止；用户明确选择后才能继续其余章节。
 - 重新运行从未完成章节继续，不重复落库已成功章节。
 
+M6 尚未关闭的实现与现场门：
+
+- [x] 为 blocking review 实现可信父任务 `targeted_fix` 选择、逐 issue resolution receipt，并只提升经过验证的 writer staging artifact。
+- [x] 为作者已修改正文/合同较新等冲突实现可信 `replace_with_verified`/保留/取消 receipt；裸 CLI 字符串继续不构成授权。
+- [ ] 在真实任务中完成 context、writer draft、reviewer、writer polish、data 四角色 `gpt-5.6-luna / medium` 的 default/fast/minimal 链，且父任务不代写。
+- [ ] 现场注入一次 projection 失败，证明只 retry/replay projection，不重跑正文、reviewer 或 data Agent。
+- [ ] 在用户单独授权后，以临时普通 Git 小说项目完成 exact allowlist backup/tag live smoke；本轮不对当前仓库做任何 Git 写。
+- [ ] 真实范围审查逐章运行，并验证 blocker 后 `stop`/`continue` 父任务用户选择 receipt。
+- [ ] 补 Windows 受限 symlink 能力用例与 Ubuntu 正式矩阵；当前 15 个 skip 不冒充通过。
+- [ ] 在真实安装后的新 Codex 顶层任务中发现全部 9 个 Skills；Hook 未信任→持久化信任 smoke 继续只作为可选安全增强。
+
 建议提交：
 
 - `feat(write): port transactional chapter workflow`
 - `feat(review): add resumable serial range review`
 - `test(write): add failure injection and resume coverage`
 
-### M7：Release Candidate，目标版本 0.9.0
+### 本机可用 Gate（当前交付目标）
+
+- [x] 补齐 Plan authored-conflict、Write blocking `targeted_fix` 逐 issue resolution、作者正文/合同冲突恢复三类可信父任务 receipt。
+- [x] 三类新增生产分支的定向、对抗与恢复测试通过；M5/M6 隔离 full gate、UTF-8/BOM、事实保护和 `git diff --check` 通过。
+- [x] 本机显式执行 Setup Apply；5 个项目 Agent 已创建，复查为 current，且无冲突。
+- [ ] 以 `0.3.0+codex.local-<cachebuster>` 刷新并在 App 点击安装；随后在新的顶层任务确认 9 个 Skill 与 5 个 Agent 均可发现/current。
+- [ ] 在本机临时或用户指定小说项目完成真实 Init（`git-mode off`）、Plan、Review/Write 与用户有限选择链；四个写章 Agent 的实际模型均为 `gpt-5.6-luna` / `medium`。
+- [ ] 现场注入一次 projection 失败并只恢复 projection；非 Git 项目安全记录 backup skip。
+- [ ] 更新本机使用入口与恢复说明；所有因宿主能力或授权无法执行的 live 项逐项记录为 skipped/blocked，不用 fixture 冒充。
+
+只有以上 gate 关闭，才可称“本机可持续写小说”。这不等于已发布版本，也不表示其他用户或平台受支持。
+
+### M7：Release Candidate，目标版本 0.9.0（暂缓）
 
 任务：
 
@@ -512,17 +653,19 @@ Marketplace 条目固定为：
 - `ci: add isolated cross-platform regression`
 - `release: add repo marketplace and release validation`
 
-### M8：Stable 1.0
+### M8：Stable 1.0（暂缓）
 
 完成条件：
 
 - 9 个 Skill 全部可发现，显式 `$skill` 和自然语言触发均通过。
-- 4 个项目 Agent 均通过 Setup、更新、冲突和新任务发现测试。
+- 5 个项目 Agent 均通过 Setup、更新、冲突和新任务发现测试。
+- 对话式有限选项在 Setup、Init、Plan、Review、Write 和恢复路径均通过；系统权限审批仍由 Codex 原生 permission/approval 处理。
+- 在不同父会话模型下，规划使用父会话模型，写章与审查的实际 Agent 模型始终为 `gpt-5.6-luna` / `medium`，且无静默 fallback。
 - 旧小说项目无需数据迁移即可打开和继续写作。
 - 主路径不再依赖 Claude 配置；兼容层从不写 `.claude`。
 - default/fast/minimal、单章/范围审查及失败恢复全部通过。
 - Windows 中文路径和 Ubuntu 回归通过。
-- Hooks 未信任时不误报保护已启用；信任后真实 deny 测试通过。
+- 若选择执行 Hook 现场 smoke，未信任时不得误报保护已启用，信任后真实 deny 测试必须通过；该现场 smoke 本身不阻断 Stable，runtime 与数据安全 gate 仍为强制条件。
 - clean tag 构建的 archive 不含密钥、用户状态、小说数据、缓存或 coverage。
 - manifest、CHANGELOG、release note、Marketplace tag、UPSTREAM lock 完全一致。
 - 从 Git Repo Marketplace 安装到全新缓存后，在新 Codex 任务完成 Setup → Init/打开旧书 → Plan → Review → Write smoke。
@@ -534,10 +677,10 @@ Marketplace 条目固定为：
 
 1. 静态校验：JSON/TOML/YAML、manifest、Skill frontmatter、Agent hash、UTF-8 无 BOM、Claude-only/Bash-only 扫描。
 2. 单元测试：路径解析、Setup、Hooks、Schema、锁、原子写、投影、validator。
-3. 行为测试：使用 canned Agent 输出，不在 CI 调用真实模型。
+3. 行为测试：使用 canned Agent 输出，不在 CI 调用真实模型；覆盖有限选项等待/分支、父会话模型变化、模型不匹配与禁止 fallback。
 4. 集成测试：新项目、旧 Claude 配置项目、非 Git 项目、嵌套父仓库。
 5. 故障注入：reviewer 非 JSON、artifact 缺失、SQLite busy、projection 中断、backup 中断、并发重复提交。
-6. 人工发布 smoke：真实 Codex 安装、Hook 信任、Setup、新任务及项目 Agent。
+6. 人工发布 smoke：真实 Codex 安装、Hook 信任、Setup、新任务及项目 Agent；回读实际 agent/model/effort，验证规划继承父会话而 write/review 固定 Luna。
 
 ### CI 分层
 
@@ -553,6 +696,8 @@ Marketplace 条目固定为：
 
 - 缺 contracts/章纲：prewrite 阻断且不覆盖正文。
 - reviewer timeout、非法 JSON、缺维度：不进入 commit。
+- writer/reviewer/context/data 的 Luna 模型不可用、名称错误、实际模型不匹配或父模型回退：不生成可提交正文/报告/artifact。
+- 用户裁决未回答、回答无效或选择“放弃”：不越过对应 gate，不把推荐项当成默认授权。
 - data artifact 缺失、外层 wrapper、pending 非空：precommit reject。
 - commit 成功但 projection 中断：commit 不重复，只补失败 projection。
 - SQLite 锁定或模拟磁盘满：旧文件仍可解析，无半写入。
@@ -599,6 +744,13 @@ Marketplace 条目固定为：
 | 2026-08-06 | M0 | complete | —（未提交） | hygiene/adapter/Plugin Creator；17 hooks；临时 index `diff --check` | pass | 上游 330 文件与总哈希一致；远端 SHA 未漂移 |
 | 2026-08-06 | M1 | complete | —（未提交） | collect/upstream-collect；full；failure/windows/integration | pass | 798 = 基线 746 + 本轮 52；732 passed、66 deselected；coverage 90.16%；9 个宿主路径未变化 |
 | 2026-08-07 | M2 | complete | 本轮两项原子提交（见 Git） | runtime/package/upstream 定向测试；validators；collect/upstream-collect/full；UTF-8/hygiene/diff | pass | 862 collected；789 passed、73 deselected；coverage 90.19%；冻结源 330/330 且 prepare 幂等；9 个宿主路径未变化；下一项 M3 |
+| 2026-08-07 | 目标补充 | complete | —（未提交） | 官方 Agent/Luna/permission 文档核对；UTF-8/BOM 回读；`git diff --check` | pass | 对话有限选项、主对话规划、Luna 写作/审查和子 Agent 上下文隔离已并入 M3–M8；未开始 M3 实现 |
+| 2026-08-07 | M3 | complete | —（按用户要求未提交） | M3 定向 204 passed、2 skipped；Skill/adapter/package/hygiene；Setup 前向与实际项目回读；显式 rollout parser；collect/upstream-collect/full；UTF-8/BOM/diff | pass | 1055 collected；978 passed、2 skipped、75 deselected；coverage 90.50%；Sol/Terra 父任务下 8/8 固定角色均为 Luna/medium，父任务规划工具调用 0；用户将 Hook 现场 smoke 降为可选增强，runtime、路径、hash 与 schema 强制边界不变；未上传 GitHub |
+| 2026-08-08 | M4 | implementation complete / release gate pending | —（按用户要求未提交） | Doctor/Query/Dashboard 定向；Skill Creator；adapter/package/hygiene；五 Agent 只读 check；collect/upstream-collect/full；`codex_m4_smoke.py`；PowerShell request-file injection smoke；UTF-8/BOM/diff | pass | 1132 collected；1042 passed、3 skipped、87 deselected；coverage 90.34%；Windows 中文路径动态端口、两个 200、穿越 403、stop、事实零变化通过；真实安装后的新顶层任务发现受授权限制未采集；未进入 M5、未发布、未上传 GitHub |
+| 2026-08-08 | M5/M6 | M5 automated core complete / M6 partial / live gates pending | —（按用户要求未提交） | Learn/Init/Plan/Review/Write/Backup 定向与对抗；Skill Creator；adapter/package/hygiene；五 Agent 只读 check；collect/upstream-collect/full；UTF-8/BOM/diff | pass | 1821 collected；1699 passed、15 skipped、107 deselected；coverage 90.83%；9 个宿主保护路径零变化；9/9 Skill 源适配落地；Plan/Review/Write 核心模块均达到 90% 级覆盖；缺实现和 live gates 已逐项保留为未勾选；未 commit/push/tag/release，未上传 GitHub |
+| 2026-08-09 | 目标收缩 | in progress | —（未提交） | 完整回读计划；核对工作树与 M5/M6 定向基线 | 174 passed | 当前完成定义改为本机 Windows Codex 可持续写小说；M7/M8 发布、跨平台与外部用户事项暂缓，M5/M6 安全与真实父任务裁决门保留 |
+| 2026-08-09 | M5/M6 本机自动核心 | implementation complete / live install pending | —（未提交） | Plan/Write receipt 生产对抗；adapter/package/hygiene；collect/upstream-collect/full；Setup check；UTF-8/BOM/diff | pass | 1892 collected；1770 passed、15 skipped、107 deselected；coverage 90.41%；9 个宿主保护路径零变化；该轮停点为 5 个 Agent 待 Apply、personal marketplace 缺失与 Codex CLI Access denied，后续状态见下一行 |
+| 2026-08-09 | Setup、0.3.0 与本机安装准备 | ready to push / App install pending | `3d08b3d`、`e9da1d8` | `codex-setup --apply/--check`；version/adapter/package/Plugin Creator/hygiene；隔离 `full`；manifest SHA 对比 | pass | 5 个 Agent 已创建并回读 current；personal marketplace 与本机插件源已建立；1893 collected、1771 passed、15 skipped、107 deselected、coverage 90.41%，9 个宿主路径零变化。用户因页面仍显示旧 `0.1.0` 暂停安装；仓库已提升到 `0.3.0`，待本轮授权 push 后刷新唯一 cachebuster 并重开安装页；不创建 tag/release |
 
 ### 默认假设
 
