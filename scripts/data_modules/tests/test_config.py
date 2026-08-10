@@ -20,9 +20,24 @@ def test_config_paths_and_defaults(tmp_path):
     assert cfg.index_db.name == "index.db"
     assert cfg.rag_db.name == "rag.db"
     assert cfg.vector_db.name == "vectors.db"
+    assert cfg.embed_api_type == "local"
+    assert cfg.embed_model == "Qwen/Qwen3-Embedding-0.6B"
+    assert cfg.rerank_api_type == "disabled"
 
     cfg.ensure_dirs()
     assert cfg.webnovel_dir.exists()
+
+
+def test_local_embedding_path_defaults_to_webnovel_home(monkeypatch, tmp_path):
+    webnovel_home = tmp_path / "runtime-home"
+    monkeypatch.setenv("WEBNOVEL_HOME", str(webnovel_home))
+    monkeypatch.delenv("EMBED_MODEL_PATH", raising=False)
+
+    cfg = DataModulesConfig.from_project_root(tmp_path / "book")
+
+    assert cfg.resolved_embed_model_path == (
+        webnovel_home / "models" / "Qwen3-Embedding-0.6B"
+    ).resolve()
 
 
 def test_get_config_and_set_project_root(tmp_path):
@@ -53,8 +68,11 @@ def test_dotenv_priority_and_legacy_file_remains_read_only(monkeypatch, tmp_path
     (legacy_home / "webnovel-writer").mkdir(parents=True)
 
     (project_root / ".env").write_text(
+        "EMBED_API_TYPE=local\n"
         "EMBED_BASE_URL=https://project.invalid\n"
         "EMBED_MODEL=project-model\n"
+        "EMBED_MODEL_PATH=local-model\n"
+        "EMBED_DEVICE=cpu\n"
         "EMBED_API_KEY=project-key\n",
         encoding="utf-8",
     )
@@ -76,7 +94,15 @@ def test_dotenv_priority_and_legacy_file_remains_read_only(monkeypatch, tmp_path
         hashlib.sha256(legacy_env.read_bytes()).hexdigest(),
     )
 
-    for key in ("EMBED_MODEL", "EMBED_API_KEY", "RERANK_BASE_URL", "RERANK_MODEL"):
+    for key in (
+        "EMBED_API_TYPE",
+        "EMBED_MODEL",
+        "EMBED_MODEL_PATH",
+        "EMBED_DEVICE",
+        "EMBED_API_KEY",
+        "RERANK_BASE_URL",
+        "RERANK_MODEL",
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("EMBED_BASE_URL", "https://process.invalid")
     monkeypatch.setenv("WEBNOVEL_HOME", str(webnovel_home))
@@ -86,6 +112,9 @@ def test_dotenv_priority_and_legacy_file_remains_read_only(monkeypatch, tmp_path
 
     assert cfg.embed_base_url == "https://process.invalid"
     assert cfg.embed_model == "project-model"
+    assert cfg.embed_api_type == "local"
+    assert cfg.embed_device == "cpu"
+    assert cfg.resolved_embed_model_path == (project_root / "local-model").resolve()
     assert cfg.embed_api_key == "project-key"
     assert cfg.rerank_base_url == "https://native.invalid"
     assert cfg.rerank_model == "legacy-model"

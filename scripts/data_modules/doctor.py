@@ -295,20 +295,114 @@ def _sqlite_checks(project_root: Path) -> list[dict[str, Any]]:
 def _rag_checks(project_root: Path) -> list[dict[str, Any]]:
     cfg = DataModulesConfig.from_project_root(project_root)
     checks: list[dict[str, Any]] = []
-    for key, present, base_url, model in (
-        ("embed", bool(str(cfg.embed_api_key or "").strip()), cfg.embed_base_url, cfg.embed_model),
-        ("rerank", bool(str(cfg.rerank_api_key or "").strip()), cfg.rerank_base_url, cfg.rerank_model),
-    ):
+
+    embed_type = str(cfg.embed_api_type or "").strip().lower()
+    checks.append(
+        _check(
+            "rag.embed.backend",
+            status=CHECK_OK if embed_type in {"local", "openai", "modal"} else CHECK_ERROR,
+            severity="info" if embed_type in {"local", "openai", "modal"} else "blocker",
+            message="embedding backend configured",
+            expected="local, openai, or modal",
+            actual=embed_type or "missing",
+            impact="" if embed_type in {"local", "openai", "modal"} else "向量投影无法选择有效后端。",
+            repair="" if embed_type in {"local", "openai", "modal"} else "在 .env 中设置 EMBED_API_TYPE=local。",
+        )
+    )
+
+    if embed_type == "local":
+        dependency_present = importlib.util.find_spec("sentence_transformers") is not None
         checks.append(
             _check(
-                f"rag.{key}.api_key",
+                "rag.embed.local_dependency",
+                status=CHECK_OK if dependency_present else CHECK_WARNING,
+                severity="info" if dependency_present else "warning",
+                message="local embedding dependency",
+                expected="sentence-transformers importable",
+                actual="present" if dependency_present else "missing",
+                impact="" if dependency_present else "本地嵌入模型无法加载。",
+                repair="" if dependency_present else "运行 python -m pip install -U sentence-transformers huggingface-hub。",
+            )
+        )
+
+        model_path = cfg.resolved_embed_model_path
+        model_complete = (
+            model_path.is_dir()
+            and (model_path / "modules.json").is_file()
+            and (model_path / "tokenizer.json").is_file()
+            and (
+                any(model_path.glob("*.safetensors"))
+                or any(model_path.glob("*.bin"))
+            )
+        )
+        checks.append(
+            _check(
+                "rag.embed.local_model",
+                status=CHECK_OK if model_complete else CHECK_WARNING,
+                severity="info" if model_complete else "warning",
+                message="local embedding model files",
+                path=str(model_path),
+                expected="downloaded Sentence Transformers model directory",
+                actual=(
+                    f"ready; model={cfg.embed_model}; device={cfg.embed_device}"
+                    if model_complete
+                    else "missing or incomplete"
+                ),
+                impact="" if model_complete else "vector projection will fail until the local model is installed.",
+                repair=(
+                    ""
+                    if model_complete
+                    else "按 README 的本地嵌入模型步骤下载 Qwen/Qwen3-Embedding-0.6B，并设置 EMBED_MODEL_PATH。"
+                ),
+            )
+        )
+    elif embed_type in {"openai", "modal"}:
+        present = bool(str(cfg.embed_api_key or "").strip())
+        checks.append(
+            _check(
+                "rag.embed.api_key",
                 status=CHECK_OK if present else CHECK_WARNING,
                 severity="info" if present else "warning",
-                message=f"{key} api key configured",
+                message="embed api key configured",
                 expected="api key present in env or .env",
-                actual=f"present; model={model}; base_url={base_url}" if present else f"missing; model={model}; base_url={base_url}",
-                impact="" if present else "RAG 相关调用会不可用或降级。",
-                repair="" if present else "复制 .env.example 为 .env，并填写对应 API key；不要把真实 key 提交到仓库。",
+                actual=(
+                    f"present; model={cfg.embed_model}; base_url={cfg.embed_base_url}"
+                    if present
+                    else f"missing; model={cfg.embed_model}; base_url={cfg.embed_base_url}"
+                ),
+                impact="" if present else "远端 embedding 调用会不可用。",
+                repair="" if present else "配置远端 EMBED_API_KEY，或改用 README 推荐的本地后端。",
+            )
+        )
+
+    rerank_type = str(cfg.rerank_api_type or "").strip().lower()
+    if rerank_type in {"disabled", "none", "off"}:
+        checks.append(
+            _check(
+                "rag.rerank.backend",
+                status=CHECK_OK,
+                severity="info",
+                message="rerank intentionally disabled",
+                expected="disabled or configured service",
+                actual="disabled; hybrid search falls back to RRF ordering",
+            )
+        )
+    else:
+        present = bool(str(cfg.rerank_api_key or "").strip())
+        checks.append(
+            _check(
+                "rag.rerank.api_key",
+                status=CHECK_OK if present else CHECK_WARNING,
+                severity="info" if present else "warning",
+                message="rerank api key configured",
+                expected="api key present in env or .env",
+                actual=(
+                    f"present; model={cfg.rerank_model}; base_url={cfg.rerank_base_url}"
+                    if present
+                    else f"missing; model={cfg.rerank_model}; base_url={cfg.rerank_base_url}"
+                ),
+                impact="" if present else "Rerank 将不可用并回退到 RRF 排序。",
+                repair="" if present else "设置 RERANK_API_TYPE=disabled 保持纯本地，或配置远端 RERANK_API_KEY。",
             )
         )
     return checks

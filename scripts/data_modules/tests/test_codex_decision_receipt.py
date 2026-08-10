@@ -305,6 +305,17 @@ def test_cross_thread_reverification_is_rejected(monkeypatch, tmp_path):
     assert caught.value.code == "cross_thread_decision"
 
 
+def test_parent_session_thread_mismatch_preserves_cross_thread_error(monkeypatch, tmp_path):
+    request = _request(monkeypatch)
+    events = _base_events(request["binding_marker"])
+    events[0]["payload"]["id"] = OTHER_THREAD_ID
+    sessions, rollout = _write_rollout(tmp_path, events)
+
+    with pytest.raises(DecisionReceiptError) as caught:
+        select_scope_bound_decision(request, sessions_root=sessions, rollout_path=rollout)
+    assert caught.value.code == "cross_thread_decision"
+
+
 @pytest.mark.parametrize(
     ("model", "effort", "code"),
     [
@@ -341,10 +352,58 @@ def test_child_parent_rollout_is_rejected(monkeypatch, tmp_path, session_extra):
     assert caught.value.code == "child_rollout_rejected"
 
 
-def test_multiple_session_meta_records_are_not_a_parent_receipt(monkeypatch, tmp_path):
+def test_identity_equivalent_repeated_session_meta_are_a_parent_receipt(monkeypatch, tmp_path):
     request = _request(monkeypatch)
     events = _base_events(request["binding_marker"])
-    events.insert(1, copy.deepcopy(events[0]))
+    with_memory = copy.deepcopy(events[0])
+    with_memory["payload"]["memory_mode"] = "enabled"
+    events[1:1] = [with_memory, copy.deepcopy(with_memory)]
+    sessions, rollout = _write_rollout(tmp_path, events)
+
+    receipt = select_scope_bound_decision(request, sessions_root=sessions, rollout_path=rollout)
+
+    assert receipt["selected"] == "replace_with_verified"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("id", OTHER_THREAD_ID, "cross_thread_decision"),
+        ("parent_thread_id", OTHER_THREAD_ID, "invalid_parent_identity"),
+        ("model", "gpt-5.6-terra", "invalid_parent_identity"),
+        ("source", "codex_cli", "invalid_parent_identity"),
+    ],
+)
+def test_conflicting_repeated_session_meta_fail_closed(monkeypatch, tmp_path, field, value, code):
+    request = _request(monkeypatch)
+    events = _base_events(request["binding_marker"])
+    conflicting = copy.deepcopy(events[0])
+    conflicting["payload"][field] = value
+    events.insert(1, conflicting)
+    sessions, rollout = _write_rollout(tmp_path, events)
+
+    with pytest.raises(DecisionReceiptError) as caught:
+        select_scope_bound_decision(request, sessions_root=sessions, rollout_path=rollout)
+    assert caught.value.code == code
+
+
+def test_exact_duplicate_turn_context_is_coalesced(monkeypatch, tmp_path):
+    request = _request(monkeypatch)
+    events = _base_events(request["binding_marker"])
+    events.insert(2, copy.deepcopy(events[1]))
+    sessions, rollout = _write_rollout(tmp_path, events)
+
+    receipt = select_scope_bound_decision(request, sessions_root=sessions, rollout_path=rollout)
+
+    assert receipt["selected"] == "replace_with_verified"
+
+
+def test_duplicate_turn_context_payload_conflict_fails_closed(monkeypatch, tmp_path):
+    request = _request(monkeypatch)
+    events = _base_events(request["binding_marker"])
+    conflicting = copy.deepcopy(events[1])
+    conflicting["payload"]["effort"] = "medium"
+    events.insert(2, conflicting)
     sessions, rollout = _write_rollout(tmp_path, events)
 
     with pytest.raises(DecisionReceiptError) as caught:

@@ -392,7 +392,10 @@ def test_init_request_rejects_fstat_identity_change_during_bounded_read(tmp_path
         ({"status": "adopted"}, "missing provenance"),
         ({"status": "discarded", "deconstruction_output": []}, "deconstruction_output"),
         ({"status": "discarded", "runtime": []}, "runtime must"),
-        ({"status": "discarded", "runtime": {"extra": "x"}}, "runtime contains unknown"),
+        (
+            {"status": "discarded", "runtime": {"task_name": "wni_caller_reported"}},
+            "runtime contains unknown",
+        ),
         (
             {
                 "status": "discarded",

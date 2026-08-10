@@ -106,9 +106,12 @@
 | 项目 | 当前状态 |
 |---|---|
 | M5/M6 实现 | Plan authored-conflict、Write blocking `targeted_fix` 逐 issue resolution、作者正文/合同冲突恢复三类可信父任务 receipt 已完成；保留/取消/仅状态具有可恢复 terminal overlay |
-| 测试 | 安全收集 1893 项；`full` 为 1771 passed、15 skipped、107 deselected；coverage 90.41%；9 个真实宿主保护路径零变化 |
-| 本机 Setup | 用户已选择 Apply；5 个项目 Agent 已创建，再次 check 返回 `current`，无冲突、无覆盖备份。按合同仍需在插件安装后的新顶层任务验证发现 |
-| 本机插件发现 | 默认 personal marketplace 与本机插件源已通过 Plugin Creator 建立并验证；Windows Store `codex.exe plugin add` 仍为 Access denied。用户在 App 安装页看到旧 `0.1.0` 后主动退出，等待仓库提升到 `0.3.0`、推送并刷新本机 cachebuster 后再点击安装 |
+| 测试 | 2026-08-10 `full` 为 1854 passed、15 skipped、107 deselected；coverage 90.23%；9 个真实宿主保护路径零变化；adapter/package/Plugin Creator、Skill、UTF-8/BOM 与 `git diff --check` 均通过 |
+| 本机 Setup | H2 合同修正后用户已授权 Apply；只更新 `webnovel_context_agent.toml`，自动备份已生成，其余 4 个 Agent unchanged，复查 5/5 `current` |
+| 本机插件发现 | App 已安装 `0.3.0+codex.20260809171729`；独立新顶层任务 `019fe995-73ef-7031-a10a-2d243e2730bf` 从该缓存发现 9/9 Skill，并由缓存 runtime 复查 5/5 Agent `current`、0 conflict。Plugin Creator validator 与受检目录前后指纹均通过，零写入 |
+| 本机真实验收 | `write-ch0001-737f9df2a045` 已完成第 1 章 default 全链，context/writer draft/reviewer/writer polish/data 均由真实 `gpt-5.6-luna / medium` Agent 产出；accepted commit、postcommit、non-Git backup skip 与 15 个事务阶段均由真源回读，主任务未代写 |
+| 本地 RAG 与后续流程 | 默认 `Qwen/Qwen3-Embedding-0.6B` 本地后端，无 `EMBED_API_KEY`；实际离线 1024 维推理和 vector-only retry 写入 14 条向量成功。Doctor 0/0、独立 full Review 0 issue/0 blocker、Query 无 fallback、Learn 回读、Dashboard loopback 双 200/stop 均通过 |
+| rollout / Desktop child 绑定修复 | 重复 `session_meta`/turn 只按既定安全规则合并；Write/Review/Init 从 canonical marker 派生完整 SHA-256 base32 task name，并强制严格整数 `depth=1` 与精确 `/root/<task_name>`。当前宿主无明文 prompt 时只收唯一 final，旧 marker 分支不再把 commentary 当结果；Write receipt 不可降级绕过，Init Apply/Adopt 只认 top-level 父任务，Review decide/persist/resume 均重验 receipt；真实 Review 另发现并修复安装形态 `review_pipeline` 导入问题 |
 | 暂缓项 | CI、发布 Marketplace、Ubuntu/其他平台、外部用户安装、commit/push/tag/release 与 GitHub 上传继续不属于当前完成定义 |
 
 官方约束以当前的 [插件打包](https://developers.openai.com/plugins/build/plugins)、[Skill](https://learn.chatgpt.com/docs/build-skills)、[项目级 Agent](https://learn.chatgpt.com/docs/agent-configuration/subagents)、[GPT-5.6 Luna](https://developers.openai.com/api/docs/models/gpt-5.6-luna)和 [Hooks](https://learn.chatgpt.com/docs/hooks)文档为准。
@@ -464,7 +467,7 @@ Dashboard 验收：
 
 发布门：
 
-- [ ] 三个 Skill 在真实安装后的新 Codex 顶层任务中可发现；本轮因用户明确禁止创建顶层任务而未采集。
+- [x] 三个只读 Skill 已在真实安装后的独立新 Codex 顶层任务中发现；同一任务实际加载 `0.3.0+codex.20260809171729` 缓存并完成只读 Setup 回读。
 - [x] Windows 中文路径 Doctor/Query/Dashboard smoke 通过。
 - [x] runtime、路径、合同 hash、schema 与事实数据前后哈希强制门通过；Hooks 未信任/已信任两阶段现场 smoke 继续作为可选增强。
 - [ ] 达标并另获用户授权后才允许创建 `v0.1.0`；本轮不创建。
@@ -525,10 +528,12 @@ Plan 验收：
 
 M5 尚未关闭的现场/发布门：
 
-- [ ] 在真实安装后的新 Codex 顶层任务中发现 M5 Skills；当前任务内文件、validator 或子 Agent 不替代发现证据。
-- [ ] Init 在真实父 rollout 中完成一次 `Apply`；可选参考路径另需真实 deconstruction 子 Agent 与 `Adopt`/`Discard`/`Cancel` 用户回答证据。
+- [x] 在真实安装后的独立新 Codex 顶层任务中发现全部 M5 Skills；证据来自该任务实际加载的安装缓存，不以当前任务文件、validator 或子 Agent 自报替代。
+- [x] Init 在真实父 rollout 中完成一次 `Apply`；`git-mode off`、目标零写入预览、父任务绑定授权和临时文件删除均由真源回读。
+- [ ] 可选参考路径另需真实 deconstruction 子 Agent 与 `Adopt`/`Discard`/`Cancel` 用户回答证据。
 - [ ] Review 以真实 `gpt-5.6-luna / medium` reviewer 完成单章，并验证 blocking 三选一的父任务用户回答 receipt。
-- [ ] Plan 由当前真实父模型完成 marker/validate/greenfield apply，并对已实现的 authored-conflict receipt 做覆盖现场 smoke。
+- [x] Plan 由当前真实父模型完成 marker/validate/greenfield apply、10 章合同提升与首章 prewrite。
+- [ ] 对已实现的 Plan authored-conflict receipt 做覆盖现场 smoke。
 
 建议提交：
 
@@ -598,11 +603,11 @@ M6 尚未关闭的实现与现场门：
 - [x] 为 blocking review 实现可信父任务 `targeted_fix` 选择、逐 issue resolution receipt，并只提升经过验证的 writer staging artifact。
 - [x] 为作者已修改正文/合同较新等冲突实现可信 `replace_with_verified`/保留/取消 receipt；裸 CLI 字符串继续不构成授权。
 - [ ] 在真实任务中完成 context、writer draft、reviewer、writer polish、data 四角色 `gpt-5.6-luna / medium` 的 default/fast/minimal 链，且父任务不代写。
-- [ ] 现场注入一次 projection 失败，证明只 retry/replay projection，不重跑正文、reviewer 或 data Agent。
+- [x] 现场注入一次 projection 失败，证明只 retry/replay projection，不重跑正文、reviewer 或 data Agent。
 - [ ] 在用户单独授权后，以临时普通 Git 小说项目完成 exact allowlist backup/tag live smoke；本轮不对当前仓库做任何 Git 写。
 - [ ] 真实范围审查逐章运行，并验证 blocker 后 `stop`/`continue` 父任务用户选择 receipt。
 - [ ] 补 Windows 受限 symlink 能力用例与 Ubuntu 正式矩阵；当前 15 个 skip 不冒充通过。
-- [ ] 在真实安装后的新 Codex 顶层任务中发现全部 9 个 Skills；Hook 未信任→持久化信任 smoke 继续只作为可选安全增强。
+- [x] 在真实安装后的独立新 Codex 顶层任务中发现全部 9 个 Skills；Hook 未信任→持久化信任 smoke 继续只作为可选安全增强。
 
 建议提交：
 
@@ -615,10 +620,10 @@ M6 尚未关闭的实现与现场门：
 - [x] 补齐 Plan authored-conflict、Write blocking `targeted_fix` 逐 issue resolution、作者正文/合同冲突恢复三类可信父任务 receipt。
 - [x] 三类新增生产分支的定向、对抗与恢复测试通过；M5/M6 隔离 full gate、UTF-8/BOM、事实保护和 `git diff --check` 通过。
 - [x] 本机显式执行 Setup Apply；5 个项目 Agent 已创建，复查为 current，且无冲突。
-- [ ] 以 `0.3.0+codex.local-<cachebuster>` 刷新并在 App 点击安装；随后在新的顶层任务确认 9 个 Skill 与 5 个 Agent 均可发现/current。
-- [ ] 在本机临时或用户指定小说项目完成真实 Init（`git-mode off`）、Plan、Review/Write 与用户有限选择链；四个写章 Agent 的实际模型均为 `gpt-5.6-luna` / `medium`。
-- [ ] 现场注入一次 projection 失败并只恢复 projection；非 Git 项目安全记录 backup skip。
-- [ ] 更新本机使用入口与恢复说明；所有因宿主能力或授权无法执行的 live 项逐项记录为 skipped/blocked，不用 fixture 冒充。
+- [x] 以 `0.3.0+codex.20260809171729` 刷新并在 App 点击安装；独立新顶层任务已确认 9 个 Skill 可发现、5 个 Agent 均为 `current`、0 conflict，且检查零写入。
+- [x] 累计完成真实本机链：`test.v.0.3` 的 Init（`git-mode off`）→ 用户 `Apply` → Plan → prewrite，以及既有验收项目的 default Review/Write；四个写章 Agent 的实际模型均为 `gpt-5.6-luna` / `medium`，父任务未代写。
+- [x] 现场注入一次 projection 失败并只恢复 projection；非 Git 项目安全记录 backup skip。
+- [x] 更新本机使用入口与恢复说明；所有因宿主能力或授权无法执行的 live 项逐项记录为 skipped/blocked，不用 fixture 冒充。
 
 只有以上 gate 关闭，才可称“本机可持续写小说”。这不等于已发布版本，也不表示其他用户或平台受支持。
 
@@ -751,6 +756,11 @@ Marketplace 条目固定为：
 | 2026-08-09 | 目标收缩 | in progress | —（未提交） | 完整回读计划；核对工作树与 M5/M6 定向基线 | 174 passed | 当前完成定义改为本机 Windows Codex 可持续写小说；M7/M8 发布、跨平台与外部用户事项暂缓，M5/M6 安全与真实父任务裁决门保留 |
 | 2026-08-09 | M5/M6 本机自动核心 | implementation complete / live install pending | —（未提交） | Plan/Write receipt 生产对抗；adapter/package/hygiene；collect/upstream-collect/full；Setup check；UTF-8/BOM/diff | pass | 1892 collected；1770 passed、15 skipped、107 deselected；coverage 90.41%；9 个宿主保护路径零变化；该轮停点为 5 个 Agent 待 Apply、personal marketplace 缺失与 Codex CLI Access denied，后续状态见下一行 |
 | 2026-08-09 | Setup、0.3.0 与本机安装准备 | ready to push / App install pending | `3d08b3d`、`e9da1d8` | `codex-setup --apply/--check`；version/adapter/package/Plugin Creator/hygiene；隔离 `full`；manifest SHA 对比 | pass | 5 个 Agent 已创建并回读 current；personal marketplace 与本机插件源已建立；1893 collected、1771 passed、15 skipped、107 deselected、coverage 90.41%，9 个宿主路径零变化。用户因页面仍显示旧 `0.1.0` 暂停安装；仓库已提升到 `0.3.0`，待本轮授权 push 后刷新唯一 cachebuster 并重开安装页；不创建 tag/release |
+| 2026-08-09 | 本机 Init live 与重复 rollout 修复 | parser fixed / cache refresh pending | —（未提交） | 9/9 Skill 真实发现；Setup check 5/5 current；初始化前 Doctor；Init dry-run；真实 Apply；重复 session/turn 对抗回归；adapter/package | targeted pass / live blocked | Init Apply 在旧安装版因同任务重复 `session_meta` fail-closed，项目目标保持不存在；已将安全合并规则统一到 Init/Plan/Review/Write/decision receipt，直接相关 6 文件 545 passed、10 skipped。新 cachebuster、App 重装与新顶层任务重跑仍待完成，故未关闭本机 live gate |
+| 2026-08-09 | Desktop task-name / agent-path 绑定 | live source refreshed / App reinstall pending | —（未提交） | Write/Review/Init 与共享 rollout 对抗；独立只读安全审计；Skill Creator；adapter/package/version；UTF-8/BOM/diff；Plugin Creator cachebuster 与 live readback | 605 passed、11 skipped | canonical marker 派生完整 digest task name；严格 depth/path、final-only、top-level parent 与 receipt 全入口重验均 fail-closed。live source=`0.3.0+codex.20260809100531`，旧 source 已备份；WindowsApps 两个 CLI 入口均 Access denied，installed cache 仍为 `0.3.0+codex.local-20260809-060313`。独立 M3 smoke 只作模型/身份 smoke；待 App 内更新并新开顶层任务完成真实写作验收 |
+| 2026-08-10 | 第 1 章、本地 RAG 与完整后续流程 | live flow complete / App reinstall pending | —（未提交） | default Write 真值审计；本地模型实际推理；projection retry；Doctor；独立 full Review；Query；Learn；Dashboard；定向与 `full`；adapter/package/Plugin Creator/Skill；Setup Apply/check；UTF-8/BOM/diff | 1849 passed、15 skipped | `write-ch0001-737f9df2a045` production complete；五个创作/审查阶段均为真实 Luna/medium；vector retry 14 条、五 projection done；Review `rv-ch0001-dde5084e0a50471b` 五维通过；本地 Qwen 默认与 GitHub README 已落地；Context H2 合同和安装形态 Review 导入已修复；source=`0.3.0+codex.20260809171729`、Setup 5/5 current，App cache 尚未更新；未 commit/push/tag/release |
+| 2026-08-10 | 新缓存与新任务发现 | complete | —（未提交） | App cache manifest；宿主 Skill root；Plugin Creator validator；缓存 runtime `codex-setup --check`；工作区/缓存/validator 前后指纹 | pass | 独立新顶层任务 `019fe995-73ef-7031-a10a-2d243e2730bf` 从 `0.3.0+codex.20260809171729` 发现 9/9 Skill；5/5 Agent current、0 conflict、零写入；未 commit/push/tag/release |
+| 2026-08-10 | 方案 B Init → Plan live gate | complete / two live deviations fixed | —（未提交） | 独立父任务真实 `Apply`；Init/Plan receipts；prewrite/project-status/Doctor；题材与状态定向回归；隔离 `full`；CSV/adapter/package/hygiene/UTF-8/diff | 1854 passed、15 skipped | 任务 `019fe9b5-abef-7e33-bcfe-76dec92cf922` 以 `gpt-5.6-sol/max`、`invoked_agents=[]` 完成 `F:\codexnovel\test.v.0.3` 的 Init 与 10 章 Plan，Doctor 0 blocker、无 Git。现场发现并修复“都市悬疑误路由都市赘婿流”和“未来合同把下一章推到第 10 章”；新 Init 回归生成悬疑推理合同，现有项目只读状态已回到第 1 章。原 smoke 项目的已提升合同保留为现场证据，未绕过 runtime 静默改写；未 tag/release。 |
 
 ### 默认假设
 

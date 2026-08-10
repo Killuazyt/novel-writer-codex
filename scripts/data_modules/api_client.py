@@ -3,10 +3,11 @@
 """
 Data Modules - API 客户端 (v5.4，v5.0 OpenAI 兼容接口沿用)
 
-支持两种 API 类型：
-1. openai: OpenAI 兼容的 /v1/embeddings 和 /v1/rerank 接口
+支持三种 Embedding 类型与可禁用的 Rerank：
+1. local: 从显式下载的本地 Sentence Transformers 目录离线推理
+2. openai: OpenAI 兼容的 /v1/embeddings 和 /v1/rerank 接口
    - 适用于: OpenAI, Jina, Cohere, vLLM, Ollama 等
-2. modal: Modal 自定义接口格式
+3. modal: Modal 自定义接口格式
    - 适用于: 自部署的 Modal 服务
 
 配置示例 (config.py):
@@ -24,6 +25,7 @@ Data Modules - API 客户端 (v5.4，v5.0 OpenAI 兼容接口沿用)
 import asyncio
 import aiohttp
 import json
+import math
 import time
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -43,7 +45,8 @@ class EmbeddingAPIClient:
     """
     通用 Embedding API 客户端
 
-    支持 OpenAI 兼容接口 (/v1/embeddings) 和 Modal 自定义接口
+    默认使用显式下载的本地 Sentence Transformers 模型；同时兼容
+    OpenAI `/v1/embeddings` 与 Modal 自定义接口。
     """
 
     def __init__(self, config=None):
@@ -54,6 +57,7 @@ class EmbeddingAPIClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self.last_error_status: Optional[int] = None
         self.last_error_message: str = ""
+        self._local_model: Any = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -64,6 +68,79 @@ class EmbeddingAPIClient:
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
+
+    def _load_local_model(self):
+        if self._local_model is not None:
+            return self._local_model
+
+        model_path = self.config.resolved_embed_model_path
+        if not model_path.is_dir():
+            raise RuntimeError(f"local_embedding_model_missing:{model_path}")
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise RuntimeError(
+                "local_embedding_dependency_missing:sentence-transformers"
+            ) from exc
+
+        kwargs: Dict[str, Any] = {"local_files_only": True}
+        device = str(getattr(self.config, "embed_device", "auto") or "auto").strip()
+        if device and device.lower() != "auto":
+            kwargs["device"] = device
+
+        try:
+            self._local_model = SentenceTransformer(str(model_path), **kwargs)
+        except Exception as exc:
+            raise RuntimeError(f"local_embedding_model_load_failed:{exc}") from exc
+        return self._local_model
+
+    def _embed_local_sync(self, texts: List[str]) -> List[List[float]]:
+        model = self._load_local_model()
+        vectors = model.encode(
+            texts,
+            batch_size=int(self.config.embed_batch_size),
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=bool(self.config.embed_normalize),
+        )
+        raw_vectors = vectors.tolist() if hasattr(vectors, "tolist") else vectors
+        if not isinstance(raw_vectors, list) or len(raw_vectors) != len(texts):
+            raise RuntimeError("local_embedding_output_count_mismatch")
+
+        normalized: List[List[float]] = []
+        expected_dimension: Optional[int] = None
+        for raw_vector in raw_vectors:
+            if not isinstance(raw_vector, (list, tuple)) or not raw_vector:
+                raise RuntimeError("local_embedding_output_invalid")
+            vector = [float(value) for value in raw_vector]
+            if not all(math.isfinite(value) for value in vector):
+                raise RuntimeError("local_embedding_output_non_finite")
+            if expected_dimension is None:
+                expected_dimension = len(vector)
+            elif len(vector) != expected_dimension:
+                raise RuntimeError("local_embedding_dimension_mismatch")
+            normalized.append(vector)
+        return normalized
+
+    async def _embed_local(self, texts: List[str]) -> Optional[List[List[float]]]:
+        start = time.time()
+        async with self.sem:
+            try:
+                embeddings = await asyncio.to_thread(self._embed_local_sync, texts)
+            except Exception as exc:
+                self.stats.errors += 1
+                self.last_error_status = None
+                self.last_error_message = str(exc)[:500]
+                print(f"[ERR] Local embed: {self.last_error_message}")
+                return None
+
+        self.stats.total_calls += 1
+        self.stats.total_time += time.time() - start
+        self._warmed_up = True
+        self.last_error_status = None
+        self.last_error_message = ""
+        return embeddings
 
     def _build_headers(self) -> Dict[str, str]:
         """构建请求头"""
@@ -123,6 +200,16 @@ class EmbeddingAPIClient:
 
         # 某些 embedding 端点（如 Gemini）拒绝空字符串，用单空格占位保持索引对齐
         texts = [t if t else " " for t in texts]
+
+        backend = str(self.config.embed_api_type or "").strip().lower()
+        if backend == "local":
+            return await self._embed_local(texts)
+        if backend not in {"openai", "modal"}:
+            self.stats.errors += 1
+            self.last_error_status = None
+            self.last_error_message = f"unsupported_embedding_backend:{backend or 'missing'}"
+            print(f"[ERR] Embed: {self.last_error_message}")
+            return None
 
         timeout = self.config.cold_start_timeout if not self._warmed_up else self.config.normal_timeout
         max_retries = getattr(self.config, 'api_max_retries', 3)
@@ -396,6 +483,18 @@ class RerankAPIClient:
         """调用 Rerank 服务（带重试机制）"""
         if not documents:
             return []
+
+        backend = str(self.config.rerank_api_type or "").strip().lower()
+        if backend in {
+            "disabled",
+            "none",
+            "off",
+        }:
+            return None
+        if backend not in {"openai", "modal"}:
+            self.stats.errors += 1
+            print(f"[ERR] Rerank: unsupported_rerank_backend:{backend or 'missing'}")
+            return None
 
         timeout = self.config.cold_start_timeout if not self._warmed_up else self.config.normal_timeout
         max_retries = getattr(self.config, 'api_max_retries', 3)

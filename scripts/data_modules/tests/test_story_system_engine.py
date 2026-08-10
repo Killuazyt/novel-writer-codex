@@ -247,6 +247,22 @@ def test_story_system_routes_chinese_rules_mystery_to_canonical_suspense():
     assert route["route_source"] != "default_seed_fallback"
 
 
+def test_story_system_routes_urban_mystery_to_mystery_instead_of_urban_trope():
+    csv_dir = Path(__file__).resolve().parents[3] / "references" / "csv"
+
+    contract = StorySystemEngine(csv_dir=csv_dir).build(
+        query="都市悬疑 社区档案员核验被改写的登记表",
+        genre="悬疑",
+        chapter=None,
+    )
+
+    route = contract["master_setting"]["route"]
+    assert route["primary_genre"] == "悬疑推理"
+    assert route["canonical_genre"] == "悬疑"
+    assert route["route_source"] == "keyword_or_alias_match"
+    assert route["primary_genre"] != "都市赘婿流"
+
+
 def test_story_system_routes_every_real_route_row():
     csv_dir = Path(__file__).resolve().parents[3] / "references" / "csv"
     engine = StorySystemEngine(csv_dir=csv_dir)

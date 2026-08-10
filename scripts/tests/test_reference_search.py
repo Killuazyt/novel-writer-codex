@@ -351,6 +351,16 @@ class TestGenreCanonical:
         assert "规则怪谈" in resolved.route_tags
         assert "知乎短篇" in resolved.format_tags
 
+    def test_resolve_urban_mystery_as_explicit_suspense_route(self):
+        from genre_taxonomy import resolve_genre_input
+
+        resolved = resolve_genre_input("都市悬疑")
+
+        assert resolved.canonical_genre == "悬疑"
+        assert resolved.matched_labels == ["都市悬疑"]
+        assert resolved.route_tags == ["悬疑推理"]
+        assert resolved.warnings == []
+
     def test_search_with_platform_tag_genre(self):
         """--genre 都市日常 should match rows with 适用题材=都市."""
         out = run_search(

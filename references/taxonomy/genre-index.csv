@@ -33,7 +33,7 @@ label,canonical_genre,label_type,template_file,route_tags,trope_tags,format_tags
 规则怪谈,悬疑,route,规则怪谈.md,规则怪谈,,,规则动物园;规则怪谈动物园;规则类,
 克苏鲁,悬疑,preset,克苏鲁.md,克苏鲁诡秘,,,克系;克系悬疑;诡秘;不可名状,
 无限流,悬疑,route,无限流.md,副本流,,,无限副本;副本流;关卡挑战;多世界任务,
-悬疑推理,悬疑,route,,悬疑推理,,,刑侦;本格;探案;推理,
+悬疑推理,悬疑,route,,悬疑推理,,,刑侦;本格;探案;推理;都市悬疑,
 游戏,游戏,canonical,,,,,,
 游戏体育,游戏,platform,游戏体育.md,游戏体育,,,网游;竞技;体育;体育竞技,
 电竞,游戏,platform,电竞.md,游戏电竞,,,电竞文;游戏电竞;电子竞技,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from data_modules.codex_m3_smoke import (
     VerifiedParentEvidence,
     build_codex_exec_argv,
     build_hook_trust_plan,
+    derive_agent_task_name,
     parse_parent_rollout_identity,
     parse_rollout_runtime_evidence,
     probe_codex_cli,
@@ -44,22 +46,30 @@ def _write_rollout(
     model: str = "gpt-5.6-luna",
     effort: str = "medium",
     omit_session_model: bool = False,
+    agent_path: str = "webnovel_writer",
+    depth: int = 1,
 ) -> Path:
     path = sessions_root / "2026" / "08" / "07" / f"rollout-test-{thread_id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     events = [
         {
+            "timestamp": "2026-08-09T08:00:00Z",
             "type": "session_meta",
             "payload": {
                 "id": thread_id,
+                "session_id": f"session-{thread_id}",
                 "parent_thread_id": parent_id,
                 "model": None if omit_session_model else model,
+                "originator": "codex_desktop",
+                "thread_source": "subagent",
+                "timestamp": "2026-08-09T08:00:00Z",
+                "cwd": r"F:\小说 项目 (本机) & smoke",
                 "source": {
                     "subagent": {
                         "thread_spawn": {
                             "parent_thread_id": parent_id,
-                            "depth": 1,
-                            "agent_path": "webnovel_writer",
+                            "depth": depth,
+                            "agent_path": agent_path,
                             "agent_nickname": "writer",
                             "agent_role": role,
                         }
@@ -120,6 +130,52 @@ def test_explicit_codex_rollout_is_verified_and_can_validate_envelope(tmp_path: 
     assert evidence.actual_reasoning_effort == "medium"
 
 
+def test_marker_derived_task_name_binds_real_child_agent_path(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    marker = "WEBNOVEL_WRITE_AGENT_REQUEST {\"run_id\":\"write-ch0001-example\"}"
+    task_name = derive_agent_task_name(marker, prefix="wnw")
+    path = _write_rollout(sessions_root, agent_path=f"/root/{task_name}")
+
+    evidence = _parse(path, sessions_root, expected_task_name=task_name)
+
+    assert evidence.thread_id == "child-001"
+    assert task_name.startswith("wnw_")
+    assert len(task_name) == 56
+
+
+def test_marker_derived_task_name_uses_full_digest_and_is_deterministic() -> None:
+    first = derive_agent_task_name("marker-a", prefix="wnw")
+    repeated = derive_agent_task_name("marker-a", prefix="wnw")
+    changed = derive_agent_task_name("marker-b", prefix="wnw")
+
+    assert first == repeated
+    assert first != changed
+    assert len(first.removeprefix("wnw_")) == 52
+
+
+@pytest.mark.parametrize(
+    ("agent_path", "depth", "message"),
+    [
+        ("/root/wrong", 1, "agent_path"),
+        ("/root/bound_extra", 1, "agent_path"),
+        ("/root/bound", 2, "depth"),
+        ("/root/bound", True, "depth"),
+        ("/root/bound", 1.0, "depth"),
+    ],
+)
+def test_marker_derived_task_binding_rejects_wrong_path_or_depth(
+    tmp_path: Path,
+    agent_path: str,
+    depth: int,
+    message: str,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root, agent_path=agent_path, depth=depth)
+
+    with pytest.raises(SmokeEvidenceError, match=message):
+        _parse(path, sessions_root, expected_task_name="bound")
+
+
 def test_rollout_accepts_missing_session_model_when_turn_context_is_authoritative(
     tmp_path: Path,
 ) -> None:
@@ -129,6 +185,162 @@ def test_rollout_accepts_missing_session_model_when_turn_context_is_authoritativ
     evidence = _parse(path, sessions_root)
 
     assert evidence.actual_model == "gpt-5.6-luna"
+
+
+def test_rollout_accepts_identical_duplicate_session_meta(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    duplicate = deepcopy(events[0])
+    duplicate["timestamp"] = "2026-08-09T08:00:01Z"
+    events.insert(1, duplicate)
+    _replace_rollout_events(path, events)
+
+    evidence = _parse(path, sessions_root)
+
+    assert evidence.thread_id == "child-001"
+
+
+def test_rollout_accepts_session_id_different_from_expected_thread_id(
+    tmp_path: Path,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    assert events[0]["payload"]["id"] == "child-001"
+    assert events[0]["payload"]["session_id"] == "session-child-001"
+    events.insert(1, deepcopy(events[0]))
+    _replace_rollout_events(path, events)
+
+    assert _parse(path, sessions_root).thread_id == "child-001"
+
+
+def test_rollout_accepts_three_identity_equivalent_host_session_meta_records(
+    tmp_path: Path,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    second = deepcopy(events[0])
+    third = deepcopy(events[0])
+    second["payload"]["memory_mode"] = "enabled"
+    third["payload"]["memory_mode"] = "enabled"
+    events[1:1] = [second, third]
+    _replace_rollout_events(path, events)
+
+    evidence = _parse(path, sessions_root)
+
+    assert evidence.thread_id == "child-001"
+
+
+@pytest.mark.parametrize(
+    ("field", "conflicting_value", "message"),
+    [
+        ("id", "other-child", "thread id mismatch"),
+        ("session_id", "other-session", "conflicting session_meta payloads"),
+        ("thread_id", "host-thread", "conflicting session_meta payloads"),
+        ("parent_thread_id", "other-parent", "conflicting session_meta payloads"),
+        ("model", "gpt-5.6-sol", "conflicting session_meta payloads"),
+        ("thread_source", "root", "conflicting session_meta payloads"),
+        ("originator", "codex_cli", "conflicting session_meta payloads"),
+        ("cwd", r"F:\另一本书", "conflicting session_meta payloads"),
+        ("timestamp", "2026-08-09T09:00:00Z", "conflicting session_meta payloads"),
+        ("future_host_field", {"generation": 2}, "conflicting session_meta payloads"),
+    ],
+)
+def test_rollout_conflicting_duplicate_session_meta_fails_closed(
+    tmp_path: Path,
+    field: str,
+    conflicting_value: object,
+    message: str,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    duplicate = deepcopy(events[0])
+    duplicate["payload"][field] = conflicting_value
+    events.insert(1, duplicate)
+    _replace_rollout_events(path, events)
+
+    with pytest.raises(SmokeEvidenceError, match=message):
+        _parse(path, sessions_root)
+
+
+@pytest.mark.parametrize("case", ["conflicting_value", "present_then_missing"])
+def test_rollout_unsafe_memory_mode_transition_fails_closed(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    first = events[0]
+    second = deepcopy(first)
+    if case == "conflicting_value":
+        second["payload"]["memory_mode"] = "enabled"
+        third = deepcopy(first)
+        third["payload"]["memory_mode"] = "disabled"
+        events[1:1] = [second, third]
+    else:
+        first["payload"]["memory_mode"] = "enabled"
+        events.insert(1, second)
+    _replace_rollout_events(path, events)
+
+    with pytest.raises(SmokeEvidenceError, match="memory_mode"):
+        _parse(path, sessions_root)
+
+
+def test_rollout_nested_source_conflict_and_malformed_duplicate_fail_closed(
+    tmp_path: Path,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    conflicting = deepcopy(events[0])
+    conflicting["payload"]["source"]["subagent"]["thread_spawn"]["agent_role"] = (
+        "webnovel_reviewer"
+    )
+    events.insert(1, conflicting)
+    _replace_rollout_events(path, events)
+    with pytest.raises(SmokeEvidenceError, match="conflicting session_meta payloads"):
+        _parse(path, sessions_root)
+
+    events = _rollout_events(path)
+    events[1]["payload"] = "not-an-object"
+    _replace_rollout_events(path, events)
+    with pytest.raises(SmokeEvidenceError, match="session_meta payloads must be objects"):
+        _parse(path, sessions_root)
+
+
+def test_rollout_accepts_exact_duplicate_turn_context(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    turn_index = next(
+        index for index, event in enumerate(events) if event.get("type") == "turn_context"
+    )
+    duplicate = deepcopy(events[turn_index])
+    duplicate["timestamp"] = "2026-08-09T08:00:02Z"
+    events.insert(turn_index + 1, duplicate)
+    _replace_rollout_events(path, events)
+
+    assert _parse(path, sessions_root).thread_id == "child-001"
+
+
+def test_rollout_duplicate_turn_id_with_payload_drift_fails_closed(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(sessions_root)
+    events = _rollout_events(path)
+    turn_index = next(
+        index for index, event in enumerate(events) if event.get("type") == "turn_context"
+    )
+    duplicate = deepcopy(events[turn_index])
+    duplicate["payload"]["future_host_field"] = {"generation": 2}
+    events.insert(turn_index + 1, duplicate)
+    _replace_rollout_events(path, events)
+
+    with pytest.raises(SmokeEvidenceError, match="duplicate turn_id"):
+        _parse(path, sessions_root)
 
 
 @pytest.mark.parametrize(
@@ -167,14 +379,13 @@ def test_workspace_fixture_cannot_masquerade_as_codex_session(tmp_path: Path) ->
     ("mutation", "message"),
     [
         ("too_short", "lacks session_meta"),
-        ("duplicate_session", "exactly one session_meta"),
         ("missing_turn", "lacks turn_context"),
         ("turn_payload", "turn_context payloads"),
-        ("session_payload", "event payloads"),
+        ("session_payload", "session_meta payloads"),
         ("missing_turn_id", "turn_id"),
         ("conflicting_turn", "conflicting turn_context"),
         ("not_subagent", "thread_spawn"),
-        ("child_thread_id", "child thread id"),
+        ("child_thread_id", "thread id"),
     ],
 )
 def test_rollout_jsonl_structure_errors_fail_closed(
@@ -187,8 +398,6 @@ def test_rollout_jsonl_structure_errors_fail_closed(
     events = _rollout_events(path)
     if mutation == "too_short":
         events = [{}]
-    elif mutation == "duplicate_session":
-        events.insert(1, events[0].copy())
     elif mutation == "missing_turn":
         events = [event for event in events if event.get("type") != "turn_context"]
     elif mutation == "turn_payload":
@@ -280,6 +489,14 @@ def test_parent_rollout_binds_thread_model_effort_and_hash(tmp_path: Path) -> No
         model="gpt-5.6-sol",
         effort="high",
     )
+    events = _rollout_events(path)
+    events[0]["payload"]["parent_thread_id"] = None
+    events[0]["payload"]["thread_source"] = "vscode"
+    events[0]["payload"]["source"] = "vscode"
+    duplicate = deepcopy(events[0])
+    duplicate["payload"]["memory_mode"] = "disabled"
+    events.insert(1, duplicate)
+    _replace_rollout_events(path, events)
 
     evidence = parse_parent_rollout_identity(
         path,
@@ -317,6 +534,11 @@ def test_parent_rollout_identity_errors_fail_closed(
         model="gpt-5.6-sol",
         effort="high",
     )
+    events = _rollout_events(path)
+    events[0]["payload"]["parent_thread_id"] = None
+    events[0]["payload"]["thread_source"] = "vscode"
+    events[0]["payload"]["source"] = "vscode"
+    _replace_rollout_events(path, events)
     if mutation == "thread":
         events = _rollout_events(path)
         events[0]["payload"]["id"] = "different-parent"
@@ -331,6 +553,62 @@ def test_parent_rollout_identity_errors_fail_closed(
 
     with pytest.raises(SmokeEvidenceError, match=message):
         parse_parent_rollout_identity(path, **arguments)
+
+
+def test_parent_rollout_rejects_child_session_even_when_identity_matches(tmp_path: Path) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(
+        sessions_root,
+        thread_id="parent-sol",
+        parent_id="upstream-parent",
+        model="gpt-5.6-sol",
+        effort="high",
+    )
+
+    with pytest.raises(SmokeEvidenceError, match="top-level Codex task"):
+        parse_parent_rollout_identity(
+            path,
+            sessions_root=sessions_root,
+            expected_thread_id="parent-sol",
+            expected_model="gpt-5.6-sol",
+            expected_reasoning_effort="high",
+        )
+
+
+@pytest.mark.parametrize(
+    ("parent_value", "source_value"),
+    [
+        (True, "vscode"),
+        (1, "vscode"),
+        ({"malformed": True}, "vscode"),
+        (None, {"subagent": "malformed"}),
+    ],
+)
+def test_parent_rollout_rejects_malformed_top_level_fields(
+    tmp_path: Path,
+    parent_value: object,
+    source_value: object,
+) -> None:
+    sessions_root = tmp_path / ".codex" / "sessions"
+    path = _write_rollout(
+        sessions_root,
+        thread_id="parent-sol",
+        model="gpt-5.6-sol",
+        effort="high",
+    )
+    events = _rollout_events(path)
+    events[0]["payload"]["parent_thread_id"] = parent_value
+    events[0]["payload"]["source"] = source_value
+    _replace_rollout_events(path, events)
+
+    with pytest.raises(SmokeEvidenceError, match="top-level Codex task"):
+        parse_parent_rollout_identity(
+            path,
+            sessions_root=sessions_root,
+            expected_thread_id="parent-sol",
+            expected_model="gpt-5.6-sol",
+            expected_reasoning_effort="high",
+        )
 
 
 def test_parent_model_matrix_requires_two_complete_fixed_role_sets() -> None:

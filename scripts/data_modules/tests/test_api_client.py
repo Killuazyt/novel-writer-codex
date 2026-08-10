@@ -241,6 +241,7 @@ def test_get_client_singleton(tmp_path):
 @pytest.mark.asyncio
 async def test_embedding_empty_and_error_paths(tmp_path, monkeypatch):
     config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "openai"
     config.embed_api_key = "sk-test"
     config.api_max_retries = 1
     client = EmbeddingAPIClient(config)
@@ -264,6 +265,7 @@ async def test_embedding_empty_and_error_paths(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_embedding_exception_and_close(tmp_path, monkeypatch):
     config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "openai"
     config.api_max_retries = 1
     client = EmbeddingAPIClient(config)
 
@@ -413,6 +415,7 @@ def test_rerank_headers_payload_and_stats(tmp_path, capsys):
 @pytest.mark.asyncio
 async def test_rerank_non_retry_error(tmp_path, monkeypatch):
     config = DataModulesConfig.from_project_root(tmp_path)
+    config.rerank_api_type = "openai"
     config.api_max_retries = 1
     client = RerankAPIClient(config)
 
@@ -460,6 +463,7 @@ async def test_embedding_session_parse_and_retry_paths(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_embedding_exception_retry_and_batch(tmp_path, monkeypatch):
     config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "openai"
     config.api_max_retries = 2
     config.api_retry_delay = 0
     client = EmbeddingAPIClient(config)
@@ -485,6 +489,84 @@ async def test_embedding_exception_retry_and_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "embed", fake_embed)
     await client.warmup()
     assert client._warmed_up is True
+
+
+@pytest.mark.asyncio
+async def test_local_embedding_uses_downloaded_model_without_http(tmp_path, monkeypatch):
+    model_dir = tmp_path / "models" / "Qwen3-Embedding-0.6B"
+    model_dir.mkdir(parents=True)
+    config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "local"
+    config.embed_model_path = str(model_dir)
+    config.embed_normalize = True
+    client = EmbeddingAPIClient(config)
+
+    class FakeLocalModel:
+        def encode(self, texts, **kwargs):
+            assert texts == ["本地向量"]
+            assert kwargs["normalize_embeddings"] is True
+            return [[0.6, 0.8]]
+
+    monkeypatch.setattr(client, "_load_local_model", lambda: FakeLocalModel())
+
+    async def fail_if_http_requested():
+        raise AssertionError("local embedding must not create an HTTP session")
+
+    monkeypatch.setattr(client, "_get_session", fail_if_http_requested)
+
+    result = await client.embed(["本地向量"])
+
+    assert result == [[0.6, 0.8]]
+    assert client.stats.total_calls == 1
+    assert client.last_error_message == ""
+
+
+@pytest.mark.asyncio
+async def test_local_embedding_missing_model_fails_without_downloading(tmp_path):
+    config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "local"
+    config.embed_model_path = str(tmp_path / "missing-model")
+    client = EmbeddingAPIClient(config)
+
+    result = await client.embed(["不会联网下载"])
+
+    assert result is None
+    assert client.stats.errors == 1
+    assert client.last_error_message.startswith("local_embedding_model_missing:")
+
+
+@pytest.mark.asyncio
+async def test_disabled_rerank_never_opens_remote_session(tmp_path, monkeypatch):
+    config = DataModulesConfig.from_project_root(tmp_path)
+    config.rerank_api_type = "disabled"
+    client = RerankAPIClient(config)
+
+    async def fail_if_http_requested():
+        raise AssertionError("disabled rerank must not create an HTTP session")
+
+    monkeypatch.setattr(client, "_get_session", fail_if_http_requested)
+
+    assert await client.rerank("query", ["document"]) is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_local_backends_fail_closed_without_http(tmp_path, monkeypatch):
+    config = DataModulesConfig.from_project_root(tmp_path)
+    config.embed_api_type = "locall"
+    config.rerank_api_type = "offline-ish"
+    embed_client = EmbeddingAPIClient(config)
+    rerank_client = RerankAPIClient(config)
+
+    async def fail_if_http_requested():
+        raise AssertionError("invalid backend must not create an HTTP session")
+
+    monkeypatch.setattr(embed_client, "_get_session", fail_if_http_requested)
+    monkeypatch.setattr(rerank_client, "_get_session", fail_if_http_requested)
+
+    assert await embed_client.embed(["本地优先"]) is None
+    assert embed_client.last_error_message == "unsupported_embedding_backend:locall"
+    assert await rerank_client.rerank("query", ["document"]) is None
+    assert rerank_client.stats.errors == 1
 
 
 @pytest.mark.asyncio

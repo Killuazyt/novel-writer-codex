@@ -188,3 +188,39 @@ def test_doctor_sqlite_connections_use_read_only_uri(tmp_path, monkeypatch):
     assert calls
     assert calls[0][1].get("uri") is True
     assert str(calls[0][0]).endswith("?mode=ro")
+
+
+def test_doctor_accepts_complete_local_embedding_model_without_api_key(tmp_path, monkeypatch):
+    _make_init_ready(tmp_path)
+    webnovel_home = tmp_path / "runtime-home"
+    model_dir = webnovel_home / "models" / "Qwen3-Embedding-0.6B"
+    model_dir.mkdir(parents=True)
+    for name in ("modules.json", "tokenizer.json", "model.safetensors"):
+        (model_dir / name).write_bytes(b"{}")
+    monkeypatch.setenv("WEBNOVEL_HOME", str(webnovel_home))
+    monkeypatch.delenv("EMBED_API_KEY", raising=False)
+    monkeypatch.setattr(doctor_module, "_python_checks", lambda: [])
+
+    report = doctor_module.build_doctor_report(tmp_path)
+    by_id = {item["id"]: item for item in report["checks"]}
+
+    assert by_id["rag.embed.backend"]["actual"] == "local"
+    assert by_id["rag.embed.local_dependency"]["status"] == "ok"
+    assert by_id["rag.embed.local_model"]["status"] == "ok"
+    assert by_id["rag.rerank.backend"]["status"] == "ok"
+    assert "rag.embed.api_key" not in by_id
+
+
+def test_doctor_warns_for_missing_local_model_without_attempting_download(tmp_path, monkeypatch):
+    _make_init_ready(tmp_path)
+    webnovel_home = tmp_path / "empty-runtime-home"
+    monkeypatch.setenv("WEBNOVEL_HOME", str(webnovel_home))
+    monkeypatch.setattr(doctor_module, "_python_checks", lambda: [])
+
+    report = doctor_module.build_doctor_report(tmp_path)
+    matches = [item for item in report["checks"] if item["id"] == "rag.embed.local_model"]
+
+    assert matches
+    assert matches[0]["status"] == "warning"
+    assert matches[0]["path"].endswith("Qwen3-Embedding-0.6B")
+    assert "README" in matches[0]["repair"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,8 @@ from data_modules.codex_agent_runtime import (
     VerifiedRuntimeEvidence,
     build_canned_envelope,
 )
+from data_modules.chapter_commit_service import ChapterCommitService
+from data_modules.projection_log import latest_projection_run, projection_status_from_run
 from data_modules.write_transaction import (
     AGENT_ACCEPT_REQUEST_SCHEMA,
     AGENT_LAUNCH_INPUT_SCHEMA,
@@ -33,6 +36,7 @@ from data_modules.write_transaction import (
     record_write_stage,
     write_transaction_status,
 )
+from .test_project_phase import _make_contracts, _make_init_ready
 
 
 def _sha(path: Path) -> str:
@@ -83,6 +87,7 @@ def _prepare_production_gates(root: Path, run_id: str, monkeypatch):
         lambda project_root, *, chapter, stage: {
             "schema_version": "webnovel-write-gate/v1",
             "stage": stage,
+            "project_root": str(Path(project_root).resolve()),
             "chapter": chapter,
             "phase": "ready",
             "ok": True,
@@ -171,6 +176,7 @@ def _write_agent_request(
     payload: str | dict,
     thread_id: str,
     parent_id: str,
+    desktop_no_marker: bool = False,
 ):
     staging = root / ".webnovel" / "tmp" / "write-runs" / run_id
     staging.mkdir(parents=True, exist_ok=True)
@@ -230,9 +236,54 @@ def _write_agent_request(
         stage=stage,
         launch_request=launch_spec,
     )
+    agent_task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
     events = [json.loads(line) for line in rollout.read_text(encoding="utf-8").splitlines() if line]
-    events.extend(
-        [
+    spawn = events[0]["payload"]["source"]["subagent"]["thread_spawn"]
+    spawn["depth"] = 1
+    spawn["agent_path"] = f"/root/{agent_task_name}"
+    if desktop_no_marker:
+        events.extend(
+            [
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "commentary",
+                        "content": [{"type": "output_text", "text": "正在处理受绑定的 Agent 请求。"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "final_answer",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    payload
+                                    if isinstance(payload, str)
+                                    else json.dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        separators=(",", ":"),
+                                    )
+                                ),
+                            }
+                        ],
+                    },
+                },
+            ]
+        )
+    else:
+        events.extend(
+            [
             {
                 "type": "response_item",
                 "payload": {
@@ -246,6 +297,7 @@ def _write_agent_request(
                 "payload": {
                     "type": "message",
                     "role": "assistant",
+                    "phase": "final_answer",
                     "content": [
                         {
                             "type": "output_text",
@@ -254,8 +306,8 @@ def _write_agent_request(
                     ],
                 },
             },
-        ]
-    )
+            ]
+        )
     rollout.write_text(
         "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
         encoding="utf-8",
@@ -762,6 +814,7 @@ def test_accept_agent_cli_parses_rollout_and_bounded_payload_files(tmp_path, mon
         payload=payload,
         thread_id="context-child",
         parent_id="parent-task",
+        desktop_no_marker=True,
     )
 
     code, result = _run_write_cli(
@@ -780,6 +833,9 @@ def test_accept_agent_cli_parses_rollout_and_bounded_payload_files(tmp_path, mon
     assert result["stage"] == "context_agent"
     assert result["details"]["evidence_trust"] == "verified_runtime"
     assert result["details"]["payload_sha256"] == hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    rollout_binding = result["details"]["source_bindings"]["rollout"]
+    assert rollout_binding["agent_task_name"].startswith("wnw_")
+    assert rollout_binding["agent_path"] == f"/root/{rollout_binding['agent_task_name']}"
     with pytest.raises(WriteTransactionError, match="consumed only once"):
         accept_agent_request(tmp_path, run_id, request)
     accepted_prefix = rollout.read_bytes()
@@ -792,6 +848,19 @@ def test_accept_agent_cli_parses_rollout_and_bounded_payload_files(tmp_path, mon
     with pytest.raises(WriteTransactionError, match="trusted rollout prefix changed"):
         write_transaction_status(tmp_path, run_id)
     rollout.write_bytes(accepted_prefix)
+    receipt_path = next(
+        (tmp_path / ".webnovel" / "write-runs" / run_id / "receipts").glob(
+            "*-context_agent.json"
+        )
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["details"]["source_bindings"]["rollout"].pop("agent_task_name")
+    receipt["details"]["source_bindings"]["rollout"].pop("agent_path")
+    receipt.pop("receipt_sha256")
+    receipt["receipt_sha256"] = write_transaction._receipt_hash(receipt)
+    receipt_path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="rollout binding is invalid"):
+        write_transaction_status(tmp_path, run_id)
 
 
 def test_prepare_agent_launch_binds_transaction_and_explicit_inputs(tmp_path, monkeypatch):
@@ -826,6 +895,10 @@ def test_prepare_agent_launch_binds_transaction_and_explicit_inputs(tmp_path, mo
     )
     prepared = prepare_agent_launch_request(tmp_path, run_id, request.resolve())
     assert prepared["prompt_marker"].startswith(write_transaction.AGENT_PROMPT_MARKER_PREFIX)
+    assert prepared["agent_task_name"] == write_transaction.derive_agent_task_name(
+        prepared["prompt_marker"],
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
     assert Path(prepared["launch_request"]["path"]).name == "context_agent-launch.json"
     state.write_text('{"changed":true}', encoding="utf-8")
     with pytest.raises(WriteTransactionError, match="preflight state changed"):
@@ -865,6 +938,7 @@ def test_accept_agent_rejects_payload_not_equal_to_rollout_final_output(tmp_path
         payload=payload,
         thread_id="output-child",
         parent_id="output-parent",
+        desktop_no_marker=True,
     )
     request = json.loads(request_path.read_text(encoding="utf-8"))
     payload_path = Path(request["payload"]["path"])
@@ -924,8 +998,9 @@ def test_current_parent_host_evidence_and_cross_parent_child_are_fail_closed(tmp
     sessions = tmp_path / "trusted-sessions"
     rollout = sessions / "2026" / "08" / "08" / f"rollout-{current_parent}.jsonl"
     rollout.parent.mkdir(parents=True)
+    parent_session = {"type": "session_meta", "payload": {"id": current_parent}}
     rollout.write_text(
-        json.dumps({"type": "session_meta", "payload": {"id": current_parent}}) + "\n",
+        "\n".join(json.dumps(event) for event in (parent_session, parent_session)) + "\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(write_transaction, "TRUSTED_CODEX_SESSIONS_ROOT", sessions)
@@ -1210,6 +1285,7 @@ def test_rollout_rejects_multiple_assistant_outputs_after_marker(tmp_path):
             expected_model="gpt-5.6-luna",
             expected_effort="medium",
             expected_marker=marker,
+            expected_task_name=None,
         )
 
 
@@ -1867,6 +1943,11 @@ def test_verified_stage_request_rechecks_each_runtime_truth_source(tmp_path, mon
         write_transaction,
         "_sync_commit_review_truth",
         lambda root, payload, progress: {"sha256": "b" * 64},
+    )
+    monkeypatch.setattr(
+        write_transaction,
+        "_verified_materialized_commit_truth",
+        lambda root, payload, progress, **kwargs: {"commit_status": "accepted"},
     )
 
     state = tmp_path / ".webnovel" / "state.json"
@@ -3701,13 +3782,14 @@ def test_lineage_helpers_reject_missing_unrelated_and_wrong_writer_manifest(
     [
         ("filename", "filename must identify"),
         ("jsonl", "not UTF-8 JSONL"),
-        ("session_count", "exactly one session_meta"),
-        ("session_payload", "session_meta payload is invalid"),
+        ("session_count", "lacks session_meta"),
+        ("session_payload", "session_meta payloads must be objects"),
+        ("conflicting_session", "conflicting session_meta payloads"),
         ("not_child", "not a Codex child Agent"),
-        ("identity", "identity mismatch"),
+        ("identity", "session_meta thread id mismatch"),
         ("no_turn", "lacks turn_context"),
-        ("turn_payload", "turn_context payload is invalid"),
-        ("duplicate_turn", "ids are missing or duplicated"),
+        ("turn_payload", "turn_context payloads must be objects"),
+        ("conflicting_turn", "conflicting turn_context payload"),
         ("duplicate_marker", "duplicate Agent prompt markers"),
         ("no_output", "lacks the bound prompt marker or final assistant output"),
     ],
@@ -3721,6 +3803,10 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
     parent_id = "parent-thread"
     role = "webnovel_context_agent"
     marker = "WEBNOVEL_AGENT_PROMPT:bound"
+    task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
     session = {
         "id": thread_id,
         "parent_thread_id": parent_id,
@@ -3729,6 +3815,8 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
             "subagent": {
                 "thread_spawn": {
                     "parent_thread_id": parent_id,
+                    "depth": 1,
+                    "agent_path": f"/root/{task_name}",
                     "agent_role": role,
                     "prompt": marker,
                 }
@@ -3755,6 +3843,14 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
         events.pop(0)
     elif case == "session_payload":
         events[0]["payload"] = []
+    elif case == "conflicting_session":
+        events.insert(
+            1,
+            {
+                "type": "session_meta",
+                "payload": {**session, "model": "gpt-5.6-terra"},
+            },
+        )
     elif case == "not_child":
         session["source"] = {}
     elif case == "identity":
@@ -3763,8 +3859,14 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
         events.remove(turn)
     elif case == "turn_payload":
         turn["payload"] = "invalid"
-    elif case == "duplicate_turn":
-        events.insert(2, dict(turn))
+    elif case == "conflicting_turn":
+        events.insert(
+            2,
+            {
+                "type": "turn_context",
+                "payload": {**turn["payload"], "effort": "high"},
+            },
+        )
     elif case == "duplicate_marker":
         events.insert(
             2,
@@ -3797,6 +3899,231 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
             expected_model="gpt-5.6-luna",
             expected_effort="medium",
             expected_marker=marker,
+            expected_task_name=task_name,
+        )
+
+
+def test_bound_rollout_parser_coalesces_exact_session_and_turn_duplicates(
+    tmp_path: Path,
+) -> None:
+    thread_id = "child-duplicate"
+    parent_id = "parent-duplicate"
+    role = "webnovel_context_agent"
+    marker = "WEBNOVEL_AGENT_PROMPT:duplicate"
+    task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
+    session = {
+        "type": "session_meta",
+        "payload": {
+            "id": thread_id,
+            "parent_thread_id": parent_id,
+            "model": "gpt-5.6-luna",
+            "source": {
+                "subagent": {
+                    "thread_spawn": {
+                        "parent_thread_id": parent_id,
+                        "depth": 1,
+                        "agent_path": f"/root/{task_name}",
+                        "agent_role": role,
+                        "prompt": marker,
+                    }
+                }
+            },
+        },
+    }
+    turn = {
+        "type": "turn_context",
+        "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+    }
+    assistant = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "final"}],
+        },
+    }
+    events = [session, session, turn, turn, assistant]
+    raw = ("\n".join(json.dumps(event) for event in events) + "\n").encode("utf-8")
+
+    evidence, output = write_transaction._parse_bound_agent_rollout(
+        raw,
+        rollout_path=tmp_path / f"rollout-{thread_id}.jsonl",
+        thread_id=thread_id,
+        parent_thread_id=parent_id,
+        expected_agent=role,
+        expected_model="gpt-5.6-luna",
+        expected_effort="medium",
+        expected_marker=marker,
+        expected_task_name=task_name,
+    )
+
+    assert evidence.thread_id == thread_id
+    assert evidence.parent_thread_id == parent_id
+    assert output == "final"
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("path", "agent_path"),
+        ("depth", "depth must equal 1"),
+        ("run", "agent_path"),
+        ("stage", "agent_path"),
+        ("launch", "agent_path"),
+    ],
+)
+def test_current_desktop_rollout_rejects_task_path_and_marker_scope_forgery(
+    tmp_path: Path,
+    case: str,
+    message: str,
+) -> None:
+    thread_id = "desktop-child"
+    parent_id = "desktop-parent"
+    marker_payload = {
+        "schema_version": write_transaction.AGENT_PROMPT_MARKER_SCHEMA,
+        "run_id": "bound-run",
+        "stage": "context_agent",
+        "transaction_sha256": "a" * 64,
+        "launch_request_sha256": "b" * 64,
+        "input_artifacts": [{"path": "C:/bound/input.json", "sha256": "c" * 64}],
+    }
+    marker = write_transaction.AGENT_PROMPT_MARKER_PREFIX + write_transaction._canonical_bytes(
+        marker_payload
+    ).decode("utf-8")
+    task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
+    forged_payload = dict(marker_payload)
+    if case == "run":
+        forged_payload["run_id"] = "other-run"
+    elif case == "stage":
+        forged_payload["stage"] = "writer_draft"
+    elif case == "launch":
+        forged_payload["launch_request_sha256"] = "d" * 64
+    forged_marker = write_transaction.AGENT_PROMPT_MARKER_PREFIX + write_transaction._canonical_bytes(
+        forged_payload
+    ).decode("utf-8")
+    forged_task_name = write_transaction.derive_agent_task_name(
+        forged_marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
+    spawn = {
+        "parent_thread_id": parent_id,
+        "depth": 2 if case == "depth" else 1,
+        "agent_path": (
+            "/root/unrelated"
+            if case == "path"
+            else f"/root/{forged_task_name if case in {'run', 'stage', 'launch'} else task_name}"
+        ),
+        "agent_role": "webnovel_context_agent",
+    }
+    events = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "parent_thread_id": parent_id,
+                "model": "gpt-5.6-luna",
+                "source": {"subagent": {"thread_spawn": spawn}},
+            },
+        },
+        {
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "final"}],
+            },
+        },
+    ]
+    raw = ("\n".join(json.dumps(event) for event in events) + "\n").encode("utf-8")
+
+    with pytest.raises(WriteTransactionError, match=message):
+        write_transaction._parse_bound_agent_rollout(
+            raw,
+            rollout_path=tmp_path / f"rollout-{thread_id}.jsonl",
+            thread_id=thread_id,
+            parent_thread_id=parent_id,
+            expected_agent="webnovel_context_agent",
+            expected_model="gpt-5.6-luna",
+            expected_effort="medium",
+            expected_marker=marker,
+            expected_task_name=task_name,
+        )
+
+
+@pytest.mark.parametrize(
+    ("phases", "message"),
+    [(["commentary"], "lacks"), (["final", "final_answer"], "multiple")],
+)
+def test_current_desktop_rollout_rejects_nonfinal_or_duplicate_output(
+    tmp_path: Path,
+    phases: list[str],
+    message: str,
+) -> None:
+    marker = "WEBNOVEL_AGENT_PROMPT:desktop-output"
+    task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
+    events = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": "desktop-output-child",
+                "parent_thread_id": "desktop-output-parent",
+                "model": "gpt-5.6-luna",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "desktop-output-parent",
+                            "depth": 1,
+                            "agent_path": f"/root/{task_name}",
+                            "agent_role": "webnovel_context_agent",
+                        }
+                    }
+                },
+            },
+        },
+        {
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+        },
+        *[
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": phase,
+                    "content": [{"type": "output_text", "text": phase}],
+                },
+            }
+            for phase in phases
+        ],
+    ]
+    raw = ("\n".join(json.dumps(event) for event in events) + "\n").encode("utf-8")
+
+    with pytest.raises(WriteTransactionError, match=message):
+        write_transaction._parse_bound_agent_rollout(
+            raw,
+            rollout_path=tmp_path / "rollout-desktop-output-child.jsonl",
+            thread_id="desktop-output-child",
+            parent_thread_id="desktop-output-parent",
+            expected_agent="webnovel_context_agent",
+            expected_model="gpt-5.6-luna",
+            expected_effort="medium",
+            expected_marker=marker,
+            expected_task_name=task_name,
         )
 
 
@@ -3805,6 +4132,10 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
     parent_id = "parent-ignore"
     role = "webnovel_context_agent"
     marker = "WEBNOVEL_AGENT_PROMPT:ignore"
+    task_name = write_transaction.derive_agent_task_name(
+        marker,
+        prefix=write_transaction.AGENT_TASK_NAME_PREFIX,
+    )
     events = [
         {
             "type": "session_meta",
@@ -3816,6 +4147,8 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
                     "subagent": {
                         "thread_spawn": {
                             "parent_thread_id": parent_id,
+                            "depth": 1,
+                            "agent_path": f"/root/{task_name}",
                             "agent_role": role,
                             "prompt": marker,
                         }
@@ -3828,6 +4161,15 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
             "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
         },
         {"type": "response_item", "payload": "ignored"},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "ignored commentary"}],
+            },
+        },
         {
             "type": "response_item",
             "payload": {
@@ -3847,9 +4189,74 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
         expected_model="gpt-5.6-luna",
         expected_effort="medium",
         expected_marker=marker,
+        expected_task_name=None,
     )
     assert evidence.thread_id == thread_id
     assert output == "final"
+
+
+def test_bound_rollout_parser_rejects_legacy_commentary_without_final(tmp_path: Path) -> None:
+    thread_id = "child-commentary-only"
+    parent_id = "parent-commentary-only"
+    role = "webnovel_context_agent"
+    marker = "WEBNOVEL_AGENT_PROMPT:commentary-only"
+    events = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "parent_thread_id": parent_id,
+                "model": "gpt-5.6-luna",
+                "source": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": parent_id,
+                            "agent_role": role,
+                        }
+                    }
+                },
+            },
+        },
+        {
+            "type": "turn_context",
+            "payload": {
+                "turn_id": "turn-1",
+                "model": "gpt-5.6-luna",
+                "effort": "medium",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": marker}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "COMMENTARY_ONLY"}],
+            },
+        },
+    ]
+    raw = ("\n".join(json.dumps(event) for event in events) + "\n").encode("utf-8")
+
+    with pytest.raises(WriteTransactionError, match="lacks the bound prompt marker or final"):
+        write_transaction._parse_bound_agent_rollout(
+            raw,
+            rollout_path=tmp_path / f"rollout-{thread_id}.jsonl",
+            thread_id=thread_id,
+            parent_thread_id=parent_id,
+            expected_agent=role,
+            expected_model="gpt-5.6-luna",
+            expected_effort="medium",
+            expected_marker=marker,
+            expected_task_name=None,
+        )
 
 
 def test_current_parent_host_binding_rejects_invalid_host_and_prefix_evidence(
@@ -3878,6 +4285,17 @@ def test_current_parent_host_binding_rejects_invalid_host_and_prefix_evidence(
         encoding="utf-8",
     )
     with pytest.raises(WriteTransactionError, match="identity does not match"):
+        write_transaction._current_parent_host_evidence()
+    session = {"type": "session_meta", "payload": {"id": thread_id, "model": "gpt-5.6-sol"}}
+    conflicting = {
+        "type": "session_meta",
+        "payload": {"id": thread_id, "model": "gpt-5.6-terra"},
+    }
+    rollout.write_text(
+        "\n".join(json.dumps(event) for event in (session, conflicting)) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(WriteTransactionError, match="conflicting session_meta payloads"):
         write_transaction._current_parent_host_evidence()
 
     monkeypatch.setattr(
@@ -4294,6 +4712,7 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
     run_id = "dispatch-replay"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (tmp_path / ".webnovel").mkdir()
     readiness = {"ready": True, "status": "ready", "problems": [], "agents": []}
     transaction = {
         "run_id": run_id,
@@ -4317,11 +4736,17 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
         lambda root, payload, receipt, progress: replayed_agents.append(receipt["stage"]),
     )
     monkeypatch.setattr(write_transaction, "_replay_review_pipeline", lambda *args: None)
+    monkeypatch.setattr(write_transaction, "_replay_recovery_decision", lambda *args: {})
     monkeypatch.setattr(write_transaction, "_signature_is_current", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         write_transaction,
         "_verified_commit_input_hashes",
         lambda *args, **kwargs: {"review_results.json": "a" * 64},
+    )
+    monkeypatch.setattr(
+        write_transaction,
+        "_verified_materialized_commit_truth",
+        lambda *args, **kwargs: {"commit_status": "accepted"},
     )
     monkeypatch.setattr(
         write_transaction,
@@ -4331,6 +4756,8 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
             "phase": "ready",
             "ok": True,
             "stage": stage,
+            "project_root": str(root.resolve()),
+            "chapter": chapter,
         },
     )
     audit = {
@@ -4351,6 +4778,8 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
                     "phase": "ready",
                     "ok": True,
                     "stage": stage,
+                    "project_root": str(tmp_path.resolve()),
+                    "chapter": 1,
                 }
             )
         ),
@@ -4359,7 +4788,16 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
         ),
     }
     receipts = [
-        {"stage": "preflight", "status": "completed", "details": {"gate_ok": True, "state": {}}},
+        {
+            "stage": "preflight",
+            "status": "completed",
+            "details": {
+                "gate_ok": True,
+                "state": write_transaction._file_signature(
+                    tmp_path / ".webnovel" / "state.json"
+                ),
+            },
+        },
         {"stage": "prewrite", "status": "completed", "details": gate_details("prewrite")},
         {"stage": "context_agent", "status": "completed", "details": {}},
         {"stage": "writer_draft", "status": "completed", "details": {}},
@@ -4440,6 +4878,442 @@ def test_production_receipt_dispatch_replays_every_non_agent_truth_stage(
         "writer_final",
         "data_agent",
     ]
+
+
+@pytest.mark.timeout(60)
+def test_real_phase_transition_replay_accepts_exact_commit_and_rejects_tamper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Exercise real gates and projection writers across the live TOCTOU boundary."""
+
+    root = tmp_path.resolve()
+    run_id = "real-phase-transition"
+    parent_id = "66666666-6666-4666-8666-666666666666"
+    _make_init_ready(root)
+    _make_contracts(root, chapter=1)
+    _mock_route_ready(monkeypatch, parent_thread_id=parent_id)
+    transaction = begin_write_transaction(
+        root,
+        chapter=1,
+        mode="default",
+        parent_model="gpt-5.6-sol",
+        workspace_root=root,
+        run_id=run_id,
+    )
+    record_verified_stage_request(root, run_id, _write_stage_request(root, run_id, "preflight"))
+    prewrite = record_verified_stage_request(
+        root,
+        run_id,
+        _write_stage_request(root, run_id, "prewrite"),
+    )
+    historical_prewrite_hash = prewrite["details"]["gate_report_sha256"]
+    sessions = root / "real-phase-sessions"
+
+    def accept(stage: str, role: str, thread_id: str, payload: str | dict, artifacts=()):
+        rollout = _write_rollout(
+            sessions,
+            role=role,
+            thread_id=thread_id,
+            parent_id=parent_id,
+        )
+        step = next(
+            item for item in transaction["route"]["steps"] if item["agent_name"] == role
+        )
+        request = _write_agent_request(
+            root,
+            run_id,
+            stage=stage,
+            rollout=rollout,
+            sessions_root=sessions,
+            envelope=build_canned_envelope(step, artifacts=list(artifacts)),
+            payload=payload,
+            thread_id=thread_id,
+            parent_id=parent_id,
+            desktop_no_marker=True,
+        )
+        return accept_agent_request(root, run_id, request)
+
+    context = "\n".join(
+        f"## {heading}\n内容"
+        for heading in ("开篇委托", "这章的故事", "这章的人物", "怎么写更顺", "收在哪里")
+    )
+    accept("context_agent", "webnovel_context_agent", "real-context", context)
+    draft_artifact, draft_payload = _writer_artifact(root, run_id, "draft")
+    accept(
+        "writer_draft",
+        "webnovel_writer",
+        "real-draft",
+        draft_payload,
+        [draft_artifact],
+    )
+    review_payload = {
+        "chapter": 1,
+        "issues": [],
+        "issues_count": 0,
+        "blocking_count": 0,
+        "has_blocking": False,
+        "dimension_results": [
+            {"dimension": name, "conclusion": "pass"}
+            for name in ("setting", "timeline", "continuity", "character", "logic")
+        ],
+        "summary": "通过",
+    }
+    accept("reviewer", "webnovel_reviewer", "real-reviewer", review_payload)
+    normalized_review = write_transaction.parse_review_output(
+        1,
+        review_payload,
+        review_mode="full",
+        strict=True,
+    ).to_dict()
+    runtime_review = root / ".webnovel" / "tmp" / "review_results.json"
+    runtime_review.write_text(
+        json.dumps(normalized_review, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    record_verified_stage_request(
+        root,
+        run_id,
+        _write_stage_request(
+            root,
+            run_id,
+            "review_pipeline",
+            artifact={"path": str(runtime_review.resolve()), "sha256": _sha(runtime_review)},
+        ),
+    )
+    final_artifact, final_payload = _writer_artifact(root, run_id, "polish")
+    accept(
+        "writer_final",
+        "webnovel_writer",
+        "real-final",
+        final_payload,
+        [final_artifact],
+    )
+    promote_verified_writer_artifact(
+        root,
+        run_id,
+        target_path="正文/第0001章-真实阶段.md",
+    )
+    chapter_contract = root / ".story-system" / "chapters" / "chapter_001.json"
+    contract_raw = chapter_contract.read_bytes()
+    contract_stat = chapter_contract.stat()
+    chapter_contract.write_text('{"meta":{"chapter":1},"late_tamper":true}', encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="contracts changed after promotion"):
+        write_transaction_status(root, run_id)
+    chapter_contract.write_bytes(contract_raw)
+    os.utime(
+        chapter_contract,
+        ns=(contract_stat.st_atime_ns, contract_stat.st_mtime_ns),
+    )
+    data_artifacts, data_payload = _data_agent_payload(root, run_id)
+    accept(
+        "data_agent",
+        "webnovel_data_agent",
+        "real-data",
+        data_payload,
+        data_artifacts,
+    )
+    current_prewrite = write_transaction.run_write_gate(root, chapter=1, stage="prewrite")
+    assert current_prewrite["ok"] is True
+    assert (
+        write_transaction._sha256_bytes(write_transaction._canonical_bytes(current_prewrite))
+        != historical_prewrite_hash
+    )
+    precommit = record_verified_stage_request(
+        root,
+        run_id,
+        _write_stage_request(root, run_id, "precommit"),
+    )
+
+    runtime_tmp = root / ".webnovel" / "tmp"
+    service = ChapterCommitService(root)
+    commit_payload = service.build_commit(
+        1,
+        json.loads((runtime_tmp / "review_results.json").read_text(encoding="utf-8")),
+        json.loads((runtime_tmp / "fulfillment_result.json").read_text(encoding="utf-8")),
+        json.loads((runtime_tmp / "disambiguation_result.json").read_text(encoding="utf-8")),
+        json.loads((runtime_tmp / "extraction_result.json").read_text(encoding="utf-8")),
+    )
+    service.persist_commit(commit_payload)
+    real_projection_writers = service._projection_writers
+
+    class FailingStateWriter:
+        def apply(self, payload):
+            raise RuntimeError("injected state failure")
+
+    def projection_writers_with_failed_state():
+        writers = real_projection_writers()
+        writers["state"] = FailingStateWriter()
+        return writers
+
+    monkeypatch.setattr(
+        service,
+        "_projection_writers",
+        projection_writers_with_failed_state,
+    )
+    projected = service.apply_projections(commit_payload)
+    projection_run = latest_projection_run(root, chapter=1)
+    assert projected["meta"]["status"] == "accepted"
+    assert projection_status_from_run(projection_run)["state"] == "failed"
+    assert projected["projection_status"]["state"] == "failed:injected state failure"
+    assert projection_run["status"] == "failed"
+    assert write_transaction_status(root, run_id)["next_stage"] == "commit"
+
+    state_path = root / ".webnovel" / "state.json"
+    state_raw = state_path.read_bytes()
+    state_stat = state_path.stat()
+    state_path.write_text('{"tampered_after_failed_state_writer":true}', encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="preflight state changed without an exact"):
+        write_transaction_status(root, run_id)
+    state_path.write_bytes(state_raw)
+    os.utime(state_path, ns=(state_stat.st_atime_ns, state_stat.st_mtime_ns))
+    assert write_transaction_status(root, run_id)["next_stage"] == "commit"
+
+    projection_log = root / ".webnovel" / "projection_log.jsonl"
+    projection_log_raw = projection_log.read_bytes()
+
+    def reject_projection_log_mutation(mutate) -> None:
+        bad_run = json.loads(json.dumps(projection_run, ensure_ascii=False))
+        mutate(bad_run)
+        projection_log.write_text(
+            json.dumps(bad_run, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(WriteTransactionError, match="exact latest projection binding"):
+            record_verified_stage_request(
+                root,
+                run_id,
+                _write_stage_request(root, run_id, "commit"),
+            )
+        projection_log.write_bytes(projection_log_raw)
+
+    reject_projection_log_mutation(
+        lambda run: (
+            run["writers"]["state"].__setitem__("status", "pending"),
+            run["projection_status"].__setitem__("state", "pending"),
+            run.__setitem__("status", "pending"),
+        )
+    )
+    reject_projection_log_mutation(
+        lambda run: run["writers"]["state"].__setitem__(
+            "error",
+            "different failure",
+        )
+    )
+    reject_projection_log_mutation(lambda run: run.__setitem__("status", "done"))
+
+    body = root / "正文" / "第0001章-真实阶段.md"
+    body_raw = body.read_bytes()
+    body.write_text("外部篡改", encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="promoted body"):
+        record_verified_stage_request(root, run_id, _write_stage_request(root, run_id, "commit"))
+    body.write_bytes(body_raw)
+
+    bound_extraction = (
+        root
+        / ".webnovel"
+        / "tmp"
+        / "write-runs"
+        / run_id
+        / "commit-inputs"
+        / "extraction_result.json"
+    )
+    extraction_raw = bound_extraction.read_bytes()
+    bound_extraction.write_text("{}", encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="run-bound data artifact changed"):
+        record_verified_stage_request(root, run_id, _write_stage_request(root, run_id, "commit"))
+    bound_extraction.write_bytes(extraction_raw)
+
+    receipts_dir = root / ".webnovel" / "write-runs" / run_id / "receipts"
+    immutable_before = {path.name: path.read_bytes() for path in receipts_dir.glob("*.json")}
+    real_record = write_transaction.record_write_stage
+    injected = {"done": False}
+
+    def advance_projection_before_candidate(*args, **kwargs):
+        if kwargs.get("stage") == "commit" and not injected["done"]:
+            injected["done"] = True
+            service.apply_projection_writers(projected)
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(
+        write_transaction,
+        "record_write_stage",
+        advance_projection_before_candidate,
+    )
+    with pytest.raises(WriteTransactionError, match="current truth changed before projections"):
+        record_verified_stage_request(
+            root,
+            run_id,
+            _write_stage_request(root, run_id, "commit"),
+        )
+    assert not list(receipts_dir.glob("*-commit.json"))
+    monkeypatch.setattr(write_transaction, "record_write_stage", real_record)
+    commit_receipt = record_verified_stage_request(
+        root,
+        run_id,
+        _write_stage_request(root, run_id, "commit"),
+    )
+    assert commit_receipt["details"]["promotion_body"]["sha256"] == _sha(body)
+    assert commit_receipt["details"]["commit_input_hashes"] == precommit["details"][
+        "commit_input_hashes"
+    ]
+    assert commit_receipt["details"]["projection_commit_path"] == str(
+        (root / ".story-system" / "commits" / "chapter_001.commit.json").resolve()
+    )
+    assert commit_receipt["details"]["projection_status"]["state"] == "failed"
+    assert (
+        commit_receipt["details"]["commit_projection_status"]["state"]
+        == "failed:injected state failure"
+    )
+    assert all((receipts_dir / name).read_bytes() == raw for name, raw in immutable_before.items())
+    initial_projection_run_id = commit_receipt["details"]["projection_run_id"]
+    monkeypatch.setattr(service, "_projection_writers", real_projection_writers)
+    service.apply_projection_writers(projected)
+    retried_projection_run = latest_projection_run(root, chapter=1)
+    assert retried_projection_run["run_id"] != initial_projection_run_id
+    assert projection_status_from_run(retried_projection_run)["state"] == "done"
+    assert write_transaction_status(root, run_id)["next_stage"] == "projections"
+    projection_receipt = record_verified_stage_request(
+        root,
+        run_id,
+        _write_stage_request(root, run_id, "projections"),
+    )
+    assert projection_receipt["details"]["projection_run_id"] != initial_projection_run_id
+
+
+def test_real_prewrite_successor_replay_still_blocks_contract_and_body_tamper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path.resolve()
+    run_id = "real-prepromotion-tamper"
+    parent_id = "55555555-5555-4555-8555-555555555555"
+    _make_init_ready(root)
+    _make_contracts(root, chapter=1)
+    _mock_route_ready(monkeypatch, parent_thread_id=parent_id)
+    transaction = begin_write_transaction(
+        root,
+        chapter=1,
+        mode="default",
+        parent_model="gpt-5.6-sol",
+        workspace_root=root,
+        run_id=run_id,
+    )
+    record_verified_stage_request(root, run_id, _write_stage_request(root, run_id, "preflight"))
+    record_verified_stage_request(root, run_id, _write_stage_request(root, run_id, "prewrite"))
+    sessions = root / "prepromotion-sessions"
+    rollout = _write_rollout(
+        sessions,
+        role="webnovel_context_agent",
+        thread_id="prepromotion-context",
+        parent_id=parent_id,
+    )
+    context = "\n".join(
+        f"## {heading}\n内容"
+        for heading in ("开篇委托", "这章的故事", "这章的人物", "怎么写更顺", "收在哪里")
+    )
+    request = _write_agent_request(
+        root,
+        run_id,
+        stage="context_agent",
+        rollout=rollout,
+        sessions_root=sessions,
+        envelope=build_canned_envelope(transaction["route"]["steps"][0]),
+        payload=context,
+        thread_id="prepromotion-context",
+        parent_id=parent_id,
+        desktop_no_marker=True,
+    )
+    accept_agent_request(root, run_id, request)
+
+    concurrent_body = root / "正文" / "第0001章-外部.md"
+    concurrent_body.write_text("外部正文", encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="chapter body changed"):
+        write_transaction_status(root, run_id)
+    concurrent_body.unlink()
+    assert write_transaction_status(root, run_id)["next_stage"] == "writer_draft"
+
+    chapter_contract = root / ".story-system" / "chapters" / "chapter_001.json"
+    original = chapter_contract.read_bytes()
+    original_stat = chapter_contract.stat()
+    chapter_contract.write_text('{"meta":{"chapter":1},"tampered":true}', encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="contracts changed"):
+        write_transaction_status(root, run_id)
+    chapter_contract.write_bytes(original)
+    os.utime(
+        chapter_contract,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    assert write_transaction_status(root, run_id)["next_stage"] == "writer_draft"
+
+
+def test_unbound_accepted_commit_neither_deadlocks_early_replay_nor_grants_state_bypass(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    parent_id = "44444444-4444-4444-8444-444444444444"
+    _mock_route_ready(monkeypatch, parent_thread_id=parent_id)
+
+    preexisting = (tmp_path / "preexisting").resolve()
+    _make_init_ready(preexisting)
+    _make_contracts(preexisting, chapter=1)
+    preexisting_commit = (
+        preexisting / ".story-system" / "commits" / "chapter_001.commit.json"
+    )
+    preexisting_commit.parent.mkdir(parents=True, exist_ok=True)
+    preexisting_commit.write_text(
+        json.dumps({"meta": {"chapter": 1, "status": "accepted"}}),
+        encoding="utf-8",
+    )
+    begin_write_transaction(
+        preexisting,
+        chapter=1,
+        mode="default",
+        parent_model="gpt-5.6-sol",
+        workspace_root=preexisting,
+        run_id="preexisting-accepted",
+    )
+    assert write_transaction_status(preexisting, "preexisting-accepted")["next_stage"] == "preflight"
+
+    concurrent = (tmp_path / "concurrent").resolve()
+    _make_init_ready(concurrent)
+    _make_contracts(concurrent, chapter=1)
+    run_id = "concurrent-accepted"
+    begin_write_transaction(
+        concurrent,
+        chapter=1,
+        mode="default",
+        parent_model="gpt-5.6-sol",
+        workspace_root=concurrent,
+        run_id=run_id,
+    )
+    record_verified_stage_request(
+        concurrent,
+        run_id,
+        _write_stage_request(concurrent, run_id, "preflight"),
+    )
+    record_verified_stage_request(
+        concurrent,
+        run_id,
+        _write_stage_request(concurrent, run_id, "prewrite"),
+    )
+    commit_path = concurrent / ".story-system" / "commits" / "chapter_001.commit.json"
+    commit_path.parent.mkdir(parents=True, exist_ok=True)
+    commit_path.write_text(
+        json.dumps({"meta": {"chapter": 1, "status": "accepted"}}),
+        encoding="utf-8",
+    )
+    assert write_transaction_status(concurrent, run_id)["next_stage"] == "context_agent"
+
+    state_path = concurrent / ".webnovel" / "state.json"
+    state_raw = state_path.read_bytes()
+    state_stat = state_path.stat()
+    state_path.write_text('{"concurrent_commit_must_not_authorize":true}', encoding="utf-8")
+    with pytest.raises(WriteTransactionError, match="preflight state changed without an exact"):
+        write_transaction_status(concurrent, run_id)
+    state_path.write_bytes(state_raw)
+    os.utime(state_path, ns=(state_stat.st_atime_ns, state_stat.st_mtime_ns))
+    assert write_transaction_status(concurrent, run_id)["next_stage"] == "context_agent"
 
 
 def test_minimal_no_review_resumes_after_first_skip_receipt(tmp_path, monkeypatch):
@@ -5314,7 +6188,7 @@ def test_production_recovery_replace_promotes_and_replays_trusted_parent_receipt
     monkeypatch.setattr(
         write_transaction,
         "_replay_completed_receipts",
-        lambda root, transaction, receipts: case["progress"],
+        lambda root, transaction, receipts, **kwargs: case["progress"],
     )
 
     promotion = promote_verified_writer_artifact(

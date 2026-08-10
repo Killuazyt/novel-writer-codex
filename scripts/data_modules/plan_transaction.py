@@ -28,6 +28,11 @@ from .plan_validator import (
     validate_plan_manifest,
 )
 from .codex_interaction import ChoiceProtocolError, build_choice_request, resolve_choice
+from .codex_m3_smoke import (
+    SmokeEvidenceError,
+    coalesce_session_meta_payloads,
+    coalesce_turn_context_payloads,
+)
 from .plan_request import PlanRequestError, plan_request_sha256, validate_plan_request
 from .project_phase import contract_files_for_chapter
 from .story_contract_schema import ChapterBrief, MasterSetting, ReviewContract, VolumeBrief
@@ -757,33 +762,33 @@ def _parse_parent_identity(
         events = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PlanTransactionError("parent rollout is not UTF-8 JSONL") from exc
-    sessions = [
-        (index, event)
-        for index, event in enumerate(events)
-        if isinstance(event, Mapping) and event.get("type") == "session_meta"
-    ]
-    if len(sessions) != 1:
-        raise PlanTransactionError("parent rollout must contain exactly one session_meta")
-    session_index, session_event = sessions[0]
-    session = session_event.get("payload")
-    turns = [
-        event.get("payload")
-        for event in events[session_index + 1 :]
-        if isinstance(event, Mapping) and event.get("type") == "turn_context"
-    ]
-    if not isinstance(session, Mapping) or not turns or any(not isinstance(turn, Mapping) for turn in turns):
-        raise PlanTransactionError("parent rollout lacks valid session/turn identity")
+    identity_events: list[Mapping[str, Any]] = []
+    for event in events:
+        if not isinstance(event, Mapping):
+            raise PlanTransactionError("parent rollout JSONL events must be objects")
+        identity_events.append(event)
+    try:
+        session_index, session = coalesce_session_meta_payloads(
+            identity_events,
+            expected_thread_id=thread_id,
+        )
+        turn_events = [
+            event
+            for event in identity_events[session_index + 1 :]
+            if event.get("type") == "turn_context"
+        ]
+        if not turn_events:
+            raise SmokeEvidenceError("rollout lacks turn_context after session_meta")
+        turns = coalesce_turn_context_payloads(turn_events)
+    except SmokeEvidenceError as exc:
+        raise PlanTransactionError(f"parent rollout identity is invalid: {exc}") from exc
+
     source = session.get("source")
     if session.get("parent_thread_id") not in {None, ""} or (
         isinstance(source, Mapping) and source.get("subagent") is not None
     ):
         raise PlanTransactionError("parent rollout must be a top-level Codex task, not a subagent")
-    seen_turns: set[str] = set()
     for turn in turns:
-        turn_id = str(turn.get("turn_id") or "").strip()
-        if not turn_id or turn_id in seen_turns:
-            raise PlanTransactionError("parent rollout turn ids are missing or duplicated")
-        seen_turns.add(turn_id)
         if turn.get("model") != expected_model or turn.get("effort") != expected_effort:
             raise PlanTransactionError("parent rollout contains conflicting model or effort")
     if (

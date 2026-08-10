@@ -208,17 +208,13 @@ def _scan_commits(project_root: Path) -> list[ChapterCommitInfo]:
     return commits
 
 
-def _latest_story_system_chapter(project_root: Path) -> int:
+def _latest_story_system_commit_chapter(project_root: Path) -> int:
     story_root = project_root / ".story-system"
     if not story_root.is_dir():
         return 0
     chapters: list[int] = []
-    for pattern in (
-        "chapters/chapter_*.json",
-        "reviews/chapter_*.review.json",
-        "commits/chapter_*.commit.json",
-    ):
-        chapters.extend(_chapter_from_path(path) for path in story_root.glob(pattern))
+    for path in story_root.glob("commits/chapter_*.commit.json"):
+        chapters.append(_chapter_from_path(path))
     return max(chapters or [0])
 
 
@@ -250,7 +246,7 @@ def _target_chapter(
         except (TypeError, ValueError):
             return 0
     latest_runtime = max(
-        _latest_story_system_chapter(project_root),
+        _latest_story_system_commit_chapter(project_root),
         _latest_draft_chapter(project_root),
     )
     if latest_runtime > latest_accepted_chapter:

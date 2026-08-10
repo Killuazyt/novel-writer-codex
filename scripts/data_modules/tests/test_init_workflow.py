@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import data_modules.init_workflow as init_workflow
+from data_modules.codex_m3_smoke import derive_agent_task_name
 from data_modules.init_request import (
     build_reference_adoption_confirmation,
     build_reference_binding_marker,
@@ -122,6 +123,10 @@ def _write_reference_rollout(
     effort: str,
     binding_marker: str,
     output: dict,
+    agent_path: str,
+    depth: int = 1,
+    include_legacy_marker: bool = False,
+    extra_final: bool = False,
 ) -> Path:
     path = sessions_root / "2026" / "08" / "08" / f"rollout-test-{child_thread_id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,10 +137,15 @@ def _write_reference_rollout(
                 "id": child_thread_id,
                 "parent_thread_id": parent_thread_id,
                 "model": parent_model,
+                "originator": "codex_desktop",
+                "thread_source": "subagent",
                 "source": {
                     "subagent": {
                         "thread_spawn": {
                             "parent_thread_id": parent_thread_id,
+                            "depth": depth,
+                            "agent_path": agent_path,
+                            "agent_nickname": "deconstruction",
                             "agent_role": "webnovel_deconstruction_agent",
                         }
                     }
@@ -150,8 +160,8 @@ def _write_reference_rollout(
             "type": "response_item",
             "payload": {
                 "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": binding_marker}],
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"ignored":"commentary"}'}],
                 "phase": "commentary",
             },
         },
@@ -170,6 +180,21 @@ def _write_reference_rollout(
             },
         },
     ]
+    if include_legacy_marker:
+        events.insert(
+            2,
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": binding_marker}],
+                    "phase": "commentary",
+                },
+            },
+        )
+    if extra_final:
+        events.append(deepcopy(events[-1]))
     path.write_text(
         "\n".join(json.dumps(event, ensure_ascii=False, separators=(",", ":")) for event in events)
         + "\n",
@@ -235,6 +260,11 @@ def _attach_strict_reference(
     workspace: Path,
     target: Path,
     sessions_root: Path,
+    agent_path: str | None = None,
+    depth: int = 1,
+    task_name_marker: str | None = None,
+    include_legacy_marker: bool = False,
+    extra_final: bool = False,
 ) -> None:
     source = workspace / "reference source.txt"
     source.write_text("可靠参考正文：这里只提供结构，不提供可复制的专名。", encoding="utf-8")
@@ -298,6 +328,10 @@ def _attach_strict_reference(
         "runtime": runtime,
     }
     reference["binding_marker"] = build_reference_binding_marker(reference)
+    task_name = derive_agent_task_name(
+        task_name_marker or reference["binding_marker"],
+        prefix="wni",
+    )
     rollout = _write_reference_rollout(
         sessions_root,
         child_thread_id=child_thread_id,
@@ -306,6 +340,10 @@ def _attach_strict_reference(
         effort=effort,
         binding_marker=reference["binding_marker"],
         output=output,
+        agent_path=agent_path or f"/root/{task_name}",
+        depth=depth,
+        include_legacy_marker=include_legacy_marker,
+        extra_final=extra_final,
     )
     runtime["rollout_sha256"] = hashlib.sha256(rollout.read_bytes()).hexdigest()
     payload["constraints"]["selected_idea"]["origin"] = "mixed"
@@ -489,6 +527,38 @@ def test_init_apply_rejects_coherent_other_parent_task_without_writes(tmp_path, 
         )
     assert exc.value.code == "apply_authorization_invalid"
     assert "parent thread does not match the current Codex task" in str(exc.value)
+    assert not target.exists()
+
+
+def test_init_apply_rejects_child_rollout_as_parent_authorization(tmp_path, monkeypatch):
+    request_file, _, target, _ = prepared_request(tmp_path, monkeypatch)
+    preview = preview_init(request_file, git_mode="off")
+    authorization_path = _write_apply_authorization(request_file, preview)
+    authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    parent_rollout = Path(authorization["runtime"]["parent_rollout_path"])
+    events = [json.loads(line) for line in parent_rollout.read_text(encoding="utf-8").splitlines()]
+    events[0]["payload"]["parent_thread_id"] = "upstream-parent"
+    events[0]["payload"]["source"] = {
+        "subagent": {"thread_spawn": {"parent_thread_id": "upstream-parent"}}
+    }
+    parent_rollout.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    authorization["runtime"]["parent_rollout_sha256"] = hashlib.sha256(
+        parent_rollout.read_bytes()
+    ).hexdigest()
+    authorization_path.write_text(json.dumps(authorization, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(InitWorkflowError) as exc:
+        _runtime_apply_init(
+            request_file,
+            git_mode="off",
+            preview_token=preview["preview_token"],
+            authorization_json=authorization_path,
+        )
+    assert exc.value.code == "apply_authorization_invalid"
+    assert "top-level Codex task" in str(exc.value)
     assert not target.exists()
 
 
@@ -765,6 +835,30 @@ def test_init_apply_creates_consistent_plan_ready_project_and_is_idempotent(tmp_
     assert tree_snapshot(target) == before
 
 
+def test_init_apply_routes_urban_mystery_to_suspense_contracts(tmp_path, monkeypatch):
+    request_file, _, target, payload = prepared_request(tmp_path, monkeypatch)
+    payload["project"]["genre"] = "都市悬疑"
+    write_request(request_file.parents[2], payload)
+
+    preview = preview_init(request_file, git_mode="off")
+    result = apply_init(
+        request_file,
+        git_mode="off",
+        preview_token=preview["preview_token"],
+    )
+
+    assert result["status"] == "success"
+    state = json.loads((target / ".webnovel" / "state.json").read_text(encoding="utf-8"))
+    master = json.loads(
+        (target / ".story-system" / "MASTER_SETTING.json").read_text(encoding="utf-8")
+    )
+    assert state["project_info"]["genre"] == "悬疑"
+    assert state["project_info"]["genre_tags"]["route"] == ["悬疑推理"]
+    assert master["route"]["primary_genre"] == "悬疑推理"
+    assert master["route"]["canonical_genre"] == "悬疑"
+    assert master["route"]["route_source"] == "keyword_or_alias_match"
+
+
 def test_init_rerun_preserves_user_markdown_and_only_fills_missing_file(tmp_path, monkeypatch):
     request_file, _, target, _ = prepared_request(tmp_path, monkeypatch)
     first = preview_init(request_file, git_mode="off")
@@ -915,6 +1009,20 @@ def test_strict_reference_rollout_is_bound_claimed_and_cannot_cross_project_repl
         target=target,
         sessions_root=sessions_root,
     )
+    reference = payload["reference_candidate"]
+    child_events = [
+        json.loads(line)
+        for line in Path(reference["runtime"]["rollout_path"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    spawn = child_events[0]["payload"]["source"]["subagent"]["thread_spawn"]
+    expected_task_name = derive_agent_task_name(reference["binding_marker"], prefix="wni")
+    assert spawn["depth"] == 1
+    assert spawn["agent_path"] == f"/root/{expected_task_name}"
+    assert reference["binding_marker"] not in Path(reference["runtime"]["rollout_path"]).read_text(
+        encoding="utf-8"
+    )
     request_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(init_workflow, "TRUSTED_CODEX_SESSIONS_ROOT", sessions_root)
     monkeypatch.setattr(
@@ -990,6 +1098,54 @@ def test_strict_reference_rollout_is_bound_claimed_and_cannot_cross_project_repl
         )
     assert exc.value.code == "reference_runtime_evidence_reused"
     assert not replay_target.exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "attach_options", "message"),
+    [
+        ("wrong-path", {"agent_path": "/root/wni_wrong"}, "agent_path"),
+        ("wrong-depth", {"depth": 2}, "depth"),
+        (
+            "marker-change",
+            {"task_name_marker": "WEBNOVEL_INIT_REFERENCE_BINDING/v1 stale"},
+            "agent_path",
+        ),
+        ("multiple-final", {"extra_final": True}, "exactly one final assistant answer"),
+    ],
+)
+def test_reference_host_task_binding_fails_closed_without_target_writes(
+    tmp_path,
+    monkeypatch,
+    case,
+    attach_options,
+    message,
+):
+    request_file, workspace, target, payload = prepared_request(tmp_path, monkeypatch)
+    sessions_root = tmp_path / f"trusted-codex-sessions-{case}"
+    sessions_root.mkdir()
+    _attach_strict_reference(
+        payload,
+        workspace=workspace,
+        target=target,
+        sessions_root=sessions_root,
+        **attach_options,
+    )
+    request_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(init_workflow, "TRUSTED_CODEX_SESSIONS_ROOT", sessions_root)
+    monkeypatch.setattr(
+        init_workflow,
+        "validate_route_readiness",
+        lambda *args, **kwargs: {"ready": True, "status": "ready", "problems": []},
+    )
+
+    preview = preview_init(request_file, git_mode="off")
+
+    assert preview["status"] == "blocked"
+    assert {item["code"] for item in preview["blockers"]} == {
+        "reference_adoption_unverified"
+    }
+    assert message in preview["blockers"][0]["detail"]
+    assert not target.exists()
 
 
 def test_reference_rollout_rejects_request_controlled_sessions_root(tmp_path, monkeypatch):
@@ -1121,6 +1277,99 @@ def test_reference_adoption_requires_parent_rollout_identity_and_hash(tmp_path, 
     assert preview["status"] == "blocked"
     assert "parent session_meta/turn_context model mismatch" in preview["blockers"][0]["detail"]
     assert not target.exists()
+
+
+def test_reference_adoption_rejects_child_rollout_as_parent_without_writes(
+    tmp_path,
+    monkeypatch,
+):
+    request_file, workspace, target, payload = prepared_request(tmp_path, monkeypatch)
+    sessions_root = tmp_path / "trusted-codex-sessions"
+    sessions_root.mkdir()
+    _attach_strict_reference(
+        payload,
+        workspace=workspace,
+        target=target,
+        sessions_root=sessions_root,
+    )
+    reference = payload["reference_candidate"]
+    runtime = reference["runtime"]
+    parent_rollout = Path(runtime["parent_rollout_path"])
+    events = [json.loads(line) for line in parent_rollout.read_text(encoding="utf-8").splitlines()]
+    events[0]["payload"]["parent_thread_id"] = "upstream-parent"
+    events[0]["payload"]["source"] = {
+        "subagent": {"thread_spawn": {"parent_thread_id": "upstream-parent"}}
+    }
+    parent_rollout.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    runtime["parent_rollout_sha256"] = hashlib.sha256(parent_rollout.read_bytes()).hexdigest()
+    reference["binding_marker"] = build_reference_binding_marker(reference)
+    reference["user_confirmation"] = build_reference_adoption_confirmation(
+        project_root=str(target.resolve()),
+        selected_idea=payload["constraints"]["selected_idea"],
+        reference_candidate=reference,
+    )
+    request_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(init_workflow, "TRUSTED_CODEX_SESSIONS_ROOT", sessions_root)
+
+    preview = preview_init(request_file, git_mode="off")
+    assert preview["status"] == "blocked"
+    assert "top-level Codex task" in preview["blockers"][0]["detail"]
+    assert not target.exists()
+
+
+def test_reference_rollout_final_json_accepts_legacy_marker_or_verified_task_binding():
+    marker = "bound-marker"
+    marker_event = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": marker}],
+        },
+    }
+    commentary_event = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": '{"ignored":true}'}],
+        },
+    }
+    final_event = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": '{"accepted":true}'}],
+        },
+    }
+
+    legacy_raw = (
+        "\n".join(json.dumps(event, separators=(",", ":")) for event in [marker_event, final_event])
+        + "\n"
+    ).encode("utf-8")
+    current_host_raw = (
+        "\n".join(
+            json.dumps(event, separators=(",", ":"))
+            for event in [commentary_event, final_event]
+        )
+        + "\n"
+    ).encode("utf-8")
+
+    assert init_workflow._rollout_final_json(
+        legacy_raw,
+        binding_marker=marker,
+    ) == {"accepted": True}
+    assert init_workflow._rollout_final_json(
+        current_host_raw,
+        binding_marker=marker,
+        task_binding_verified=True,
+    ) == {"accepted": True}
 
 
 @pytest.mark.parametrize(

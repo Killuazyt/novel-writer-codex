@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from data_modules.codex_agent_runtime import validate_agent_payload
+
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENTS_DIR = ROOT / "references" / "agents"
@@ -109,22 +111,38 @@ def test_deconstruction_inherits_parent_model_and_never_pins_luna() -> None:
     assert "禁止静默改用 Luna 或其他模型" in text
 
 
-def test_context_contract_is_read_only_and_requires_complete_five_part_brief() -> None:
+def test_context_contract_is_read_only_and_requires_complete_five_part_brief(
+    tmp_path: Path,
+) -> None:
     text = _read_contract("webnovel_context_agent.md")
-
-    assert "零写入" in text
-    assert "只读 sandbox" in text
-    assert "五段必须全部非空" in text
-    for heading in (
+    headings = (
         "开篇委托",
         "这章的故事",
         "这章的人物",
         "怎么写更顺",
         "收在哪里",
-    ):
-        assert heading in text
+    )
+
+    assert "零写入" in text
+    assert "只读 sandbox" in text
+    assert "五段必须全部非空" in text
+    assert "不得添加前言、代码围栏、编号、额外 H2" in text
+    positions = [text.index(f"## {heading}", text.index("```text")) for heading in headings]
+    assert positions == sorted(positions)
     assert "insufficient_context" in text
     assert "不得同时返回残缺任务书" in text
+
+    payload = "\n\n".join(f"## {heading}\n非空内容" for heading in headings)
+    assert validate_agent_payload(
+        "context",
+        payload,
+        project_root=tmp_path,
+        run_id="context-contract-wire",
+    ) == {
+        "accepted": True,
+        "code": "ok",
+        "accepted_artifacts": [],
+    }
 
 
 def test_writer_contract_only_writes_run_staging_and_returns_metadata() -> None:

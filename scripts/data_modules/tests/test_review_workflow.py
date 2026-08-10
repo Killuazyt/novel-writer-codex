@@ -5,6 +5,8 @@ import json
 import hashlib
 import os
 import sqlite3
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -45,6 +47,47 @@ from data_modules.run_ledger import (
 
 TEST_PARENT_THREAD_ID = "11111111-1111-4111-8111-111111111111"
 OTHER_PARENT_THREAD_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def test_review_pipeline_imports_with_only_installed_scripts_dir_on_sys_path(
+    tmp_path: Path,
+) -> None:
+    scripts_dir = Path(__file__).resolve().parents[2]
+    code = f"""
+import sys
+from pathlib import Path
+sys.path.insert(0, {str(scripts_dir)!r})
+import data_modules.review_workflow as workflow
+
+workflow._recover_sqlite_wal_if_needed = lambda root: None
+workflow._validate_sqlite_bundle = lambda root: None
+workflow.DataModulesConfig.from_project_root = classmethod(lambda cls, root: object())
+
+class DummyIndexManager:
+    def __init__(self, config):
+        pass
+
+    def save_review_metrics(self, record):
+        assert record.start_chapter == 1
+        assert record.end_chapter == 1
+
+workflow.IndexManager = DummyIndexManager
+workflow._save_metrics(
+    Path({str(tmp_path)!r}),
+    {{"start_chapter": 1, "end_chapter": 1}},
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", "-c", code],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def _write_json(path: Path, payload: object) -> Path:
@@ -142,6 +185,9 @@ def _accept_file(
     model: str = "gpt-5.6-luna",
     event_only: bool = False,
     duplicate_event_messages: bool = False,
+    include_binding_marker: bool = False,
+    agent_path: str | None = None,
+    depth: int = 1,
 ) -> Path:
     sessions = review_workflow_module._trusted_codex_sessions_root()
     child_id = f"child-{prepared['run_id']}"
@@ -159,8 +205,8 @@ def _accept_file(
                     "subagent": {
                         "thread_spawn": {
                             "parent_thread_id": parent_id,
-                            "depth": 1,
-                            "agent_path": "webnovel_reviewer",
+                            "depth": depth,
+                            "agent_path": agent_path or prepared["agent_path"],
                             "agent_nickname": "reviewer",
                             "agent_role": "webnovel_reviewer",
                         }
@@ -180,7 +226,11 @@ def _accept_file(
                 "content": [
                     {
                         "type": "input_text",
-                        "text": f"{prepared['binding_marker']}\nrequest={prepared['request_file']}",
+                        "text": (
+                            f"{prepared['binding_marker']}\nrequest={prepared['request_file']}"
+                            if include_binding_marker
+                            else f"request={prepared['request_file']}"
+                        ),
                     }
                 ],
             },
@@ -207,7 +257,11 @@ def _accept_file(
                             "content": [
                                 {
                                     "type": "input_text",
-                                    "text": f"serialization retry; {prepared['binding_marker']}",
+                                    "text": (
+                                        f"serialization retry; {prepared['binding_marker']}"
+                                        if include_binding_marker
+                                        else "serialization retry"
+                                    ),
                                 }
                             ],
                         },
@@ -400,6 +454,24 @@ def _choice_label(decision: dict, option_id: str) -> str:
     raise AssertionError(f"missing visible choice label: {option_id}")
 
 
+def _rollout_events_from_request(request_file: Path) -> tuple[Path, list[dict]]:
+    request = json.loads(request_file.read_text(encoding="utf-8"))
+    rollout = Path(request["runtime"]["rollout_path"])
+    events = [
+        json.loads(line)
+        for line in rollout.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    return rollout, events
+
+
+def _rewrite_rollout_events(rollout: Path, events: list[dict]) -> None:
+    rollout.write_text(
+        "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture
 def workflow_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     project = _make_project(tmp_path)
@@ -503,6 +575,8 @@ def test_prepare_accept_persist_and_resume_without_reviewer_rerun(
     request = json.loads(Path(prepared["request_file"]).read_text(encoding="utf-8"))
     assert request["inputs"][0]["path"].endswith("第0001章.md")
     assert request["instructions"]["write_allowed"] is False
+    assert prepared["agent_task_name"].startswith("wnr_")
+    assert prepared["agent_path"] == f"/root/{prepared['agent_task_name']}"
     accept_file = _accept_file(tmp_path, prepared, [_review_payload(1)])
 
     result = accept_review(project, run_id=prepared["run_id"], request_file=accept_file)
@@ -513,6 +587,8 @@ def test_prepare_accept_persist_and_resume_without_reviewer_rerun(
     assert run is not None
     assert run["actual_model"] == "gpt-5.6-luna"
     assert run["actual_reasoning_effort"] == "medium"
+    assert run["runtime_evidence"]["agent_task_name"] == prepared["agent_task_name"]
+    assert run["runtime_evidence"]["agent_path"] == prepared["agent_path"]
     assert Path(run["artifacts"]["result"]["path"]).is_file()
     assert Path(run["artifacts"]["metrics"]["path"]).is_file()
     assert Path(run["artifacts"]["report"]["path"]).is_file()
@@ -522,6 +598,30 @@ def test_prepare_accept_persist_and_resume_without_reviewer_rerun(
         ).fetchone()[0]
     assert f"run_id={prepared['run_id']}" in notes
     assert resume_review(project, run_id=prepared["run_id"])["status"] == "persisted"
+
+
+def test_resume_revalidates_reviewer_task_path_receipt(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    accept_review(
+        project,
+        run_id=prepared["run_id"],
+        request_file=_accept_file(tmp_path, prepared, [_review_payload(1)]),
+    )
+    path = project / ".webnovel" / "run_ledger.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["review"]["runs"][prepared["run_id"]]["runtime_evidence"]["agent_path"] = (
+        "/root/wrong"
+    )
+    _write_json(path, payload)
+
+    with pytest.raises(ReviewWorkflowError, match="runtime receipt"):
+        review_workflow_module.persist_review_run(project, run_id=prepared["run_id"])
+    with pytest.raises(ReviewWorkflowError, match="runtime receipt"):
+        resume_review(project, run_id=prepared["run_id"])
 
 
 def test_persisted_receipt_repairs_only_missing_artifacts_or_db_without_reviewer(
@@ -683,6 +783,102 @@ def test_blocking_decision_receipt_failures_are_zero_write(
     assert (project / "正文" / "第0001章.md").read_bytes() == before
     assert not (project / "审查报告").exists()
     assert not (project / ".webnovel" / "index.db").exists()
+
+
+def test_blocking_decision_revalidates_reviewer_task_receipt_before_choice(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    pending = accept_review(
+        project,
+        run_id=prepared["run_id"],
+        request_file=_accept_file(tmp_path, prepared, [_review_payload(1, blocking=True)]),
+    )
+    request_file = _decision_file(
+        tmp_path,
+        pending["decision"],
+        _choice_label(pending["decision"], "targeted_fix"),
+        run_id=prepared["run_id"],
+    )
+    ledger_path = project / ".webnovel" / "run_ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger["review"]["runs"][prepared["run_id"]]["runtime_evidence"]["agent_path"] = (
+        "/root/wrong"
+    )
+    _write_json(ledger_path, ledger)
+
+    with pytest.raises(ReviewWorkflowError, match="runtime receipt"):
+        decide_review(project, run_id=prepared["run_id"], request_file=request_file)
+    assert get_review_run(project, prepared["run_id"])["status"] == "awaiting_decision"
+
+
+def test_blocking_decision_coalesces_exact_parent_session_and_turn_duplicates(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    pending = accept_review(
+        project,
+        run_id=prepared["run_id"],
+        request_file=_accept_file(tmp_path, prepared, [_review_payload(1, blocking=True)]),
+    )
+    request_file = _decision_file(
+        tmp_path,
+        pending["decision"],
+        _choice_label(pending["decision"], "report_only"),
+        run_id=prepared["run_id"],
+    )
+    rollout, events = _rollout_events_from_request(request_file)
+    session_index = next(index for index, event in enumerate(events) if event["type"] == "session_meta")
+    events.insert(session_index + 1, json.loads(json.dumps(events[session_index])))
+    turn_index = next(index for index, event in enumerate(events) if event["type"] == "turn_context")
+    events.insert(turn_index + 1, json.loads(json.dumps(events[turn_index])))
+    _rewrite_rollout_events(rollout, events)
+
+    result = decide_review(project, run_id=prepared["run_id"], request_file=request_file)
+
+    assert result["status"] == "persisted"
+    assert get_review_run(project, prepared["run_id"])["decision"]["selected"] == "report_only"
+
+
+@pytest.mark.parametrize("conflict", ["session_identity", "turn_identity"])
+def test_blocking_decision_rejects_conflicting_duplicate_parent_identity(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+    conflict: str,
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    pending = accept_review(
+        project,
+        run_id=prepared["run_id"],
+        request_file=_accept_file(tmp_path, prepared, [_review_payload(1, blocking=True)]),
+    )
+    request_file = _decision_file(
+        tmp_path,
+        pending["decision"],
+        _choice_label(pending["decision"], "report_only"),
+        run_id=prepared["run_id"],
+    )
+    rollout, events = _rollout_events_from_request(request_file)
+    event_type = "session_meta" if conflict == "session_identity" else "turn_context"
+    event_index = next(index for index, event in enumerate(events) if event["type"] == event_type)
+    duplicate = json.loads(json.dumps(events[event_index]))
+    if conflict == "session_identity":
+        duplicate["payload"]["model"] = "gpt-5.6-terra"
+    else:
+        duplicate["payload"]["effort"] = "low"
+    events.insert(event_index + 1, duplicate)
+    _rewrite_rollout_events(rollout, events)
+
+    with pytest.raises(ReviewWorkflowError) as exc_info:
+        decide_review(project, run_id=prepared["run_id"], request_file=request_file)
+
+    assert exc_info.value.code == "invalid_decision_receipt"
+    assert get_review_run(project, prepared["run_id"])["status"] == "awaiting_decision"
 
 
 def test_blocking_decision_rejects_cross_run_attacker_root_and_replay(
@@ -890,7 +1086,7 @@ def test_second_response_after_valid_first_result_is_rejected(
     assert [item["status"] for item in run["attempts"]] == ["accepted"]
 
 
-def test_response_item_is_authoritative_and_event_only_is_legacy_fallback(
+def test_response_item_is_authoritative_and_explicit_marker_enables_legacy_fallback(
     tmp_path: Path,
     workflow_env: tuple[Path, Path],
 ) -> None:
@@ -918,10 +1114,91 @@ def test_response_item_is_authoritative_and_event_only_is_legacy_fallback(
             second,
             [_review_payload(2)],
             event_only=True,
+            include_binding_marker=True,
         ),
     )
     assert second_result["status"] == "persisted"
     assert len(get_review_run(project, second["run_id"])["attempts"]) == 1
+
+
+def test_desktop_agent_path_binding_ignores_commentary_and_accepts_final(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    request_file = _accept_file(tmp_path, prepared, [_review_payload(1)])
+    rollout, events = _rollout_events_from_request(request_file)
+    final_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("type") == "response_item"
+        and event.get("payload", {}).get("role") == "assistant"
+    )
+    events.insert(
+        final_index,
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "not reviewer JSON"}],
+            },
+        },
+    )
+    _rewrite_rollout_events(rollout, events)
+
+    assert accept_review(project, run_id=prepared["run_id"], request_file=request_file)[
+        "status"
+    ] == "persisted"
+
+
+@pytest.mark.parametrize(
+    ("agent_path", "depth", "message"),
+    [("/root/wrong", 1, "agent_path"), (None, 2, "depth")],
+)
+def test_reviewer_accept_rejects_wrong_bound_path_or_depth(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+    agent_path: str | None,
+    depth: int,
+    message: str,
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    with pytest.raises(ReviewWorkflowError, match=message):
+        accept_review(
+            project,
+            run_id=prepared["run_id"],
+            request_file=_accept_file(
+                tmp_path,
+                prepared,
+                [_review_payload(1)],
+                agent_path=agent_path,
+                depth=depth,
+            ),
+        )
+
+
+def test_reviewer_accept_rejects_agent_path_derived_for_another_run(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    first = _prepare(project, workspace, chapter=1)
+    second = _prepare(project, workspace, chapter=2)
+    with pytest.raises(ReviewWorkflowError, match="agent_path"):
+        accept_review(
+            project,
+            run_id=second["run_id"],
+            request_file=_accept_file(
+                tmp_path,
+                second,
+                [_review_payload(2)],
+                agent_path=first["agent_path"],
+            ),
+        )
 
 
 def test_more_than_two_bound_response_items_is_rejected(
@@ -961,6 +1238,55 @@ def test_runtime_identity_mismatch_generates_no_report(
                 model="gpt-5.6-sol",
             ),
         )
+    assert not (project / "审查报告").exists()
+    assert get_review_run(project, prepared["run_id"])["status"] == "failed_validation"
+
+
+def test_reviewer_accept_coalesces_exact_child_session_and_turn_duplicates(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    request_file = _accept_file(tmp_path, prepared, [_review_payload(1)])
+    rollout, events = _rollout_events_from_request(request_file)
+    session_index = next(index for index, event in enumerate(events) if event["type"] == "session_meta")
+    events.insert(session_index + 1, json.loads(json.dumps(events[session_index])))
+    turn_index = next(index for index, event in enumerate(events) if event["type"] == "turn_context")
+    events.insert(turn_index + 1, json.loads(json.dumps(events[turn_index])))
+    _rewrite_rollout_events(rollout, events)
+
+    result = accept_review(project, run_id=prepared["run_id"], request_file=request_file)
+
+    assert result["status"] == "persisted"
+    evidence = get_review_run(project, prepared["run_id"])["runtime_evidence"]
+    assert evidence["parent_thread_id"] == TEST_PARENT_THREAD_ID
+
+
+@pytest.mark.parametrize("conflict", ["session_identity", "turn_identity"])
+def test_reviewer_accept_rejects_conflicting_duplicate_child_identity(
+    tmp_path: Path,
+    workflow_env: tuple[Path, Path],
+    conflict: str,
+) -> None:
+    project, workspace = workflow_env
+    prepared = _prepare(project, workspace)
+    request_file = _accept_file(tmp_path, prepared, [_review_payload(1)])
+    rollout, events = _rollout_events_from_request(request_file)
+    event_type = "session_meta" if conflict == "session_identity" else "turn_context"
+    event_index = next(index for index, event in enumerate(events) if event["type"] == event_type)
+    duplicate = json.loads(json.dumps(events[event_index]))
+    if conflict == "session_identity":
+        duplicate["payload"]["parent_thread_id"] = OTHER_PARENT_THREAD_ID
+    else:
+        duplicate["payload"]["model"] = "gpt-5.6-sol"
+    events.insert(event_index + 1, duplicate)
+    _rewrite_rollout_events(rollout, events)
+
+    with pytest.raises(ReviewWorkflowError) as exc_info:
+        accept_review(project, run_id=prepared["run_id"], request_file=request_file)
+
+    assert exc_info.value.code == "invalid_runtime_evidence"
     assert not (project / "审查报告").exists()
     assert get_review_run(project, prepared["run_id"])["status"] == "failed_validation"
 
@@ -3061,7 +3387,12 @@ def test_reviewer_rollout_stable_read_rejects_untrusted_bytes(
         monkeypatch.setattr(review_workflow_module, "MAX_REVIEW_JSON_BYTES", 4)
         output_event = {
             "type": "response_item",
-            "payload": {"type": "message", "role": "assistant", "content": "too long"},
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": "too long",
+            },
         }
         path.write_text(
             "\n".join(json.dumps(event) for event in (binding_event, output_event)) + "\n",
@@ -3757,7 +4088,12 @@ def test_review_rollout_revalidates_handle_and_parsed_hash(
         },
         {
             "type": "response_item",
-            "payload": {"type": "message", "role": "assistant", "content": "{}"},
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": "{}",
+            },
         },
     ]
     path = tmp_path / "child.jsonl"

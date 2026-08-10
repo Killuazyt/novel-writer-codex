@@ -47,7 +47,11 @@ description: 通过固定 Luna 项目 Agent 和不可变事务 receipt 起草、
 2. 调用 `webnovel_context_agent`，只接收精简任务书结果。用 M3 runtime evidence 和
    payload gate 接受后，才交给 writer。先把明确输入 artifact 的绝对路径/hash 写入本
    run requests 目录，调用 `prepare-agent --request-file <ABS_JSON>`，把返回的精确 marker
-   放入子 Agent prompt；子任务只允许一个最终 assistant 输出。再把可信 rollout identity、
+   与 launch request 路径/hash 放入子 Agent prompt；同时必须把返回的
+   `agent_task_name` 原样用作 `spawn_agent` 的 `task_name`，不得自行加前后缀、复用旧名称
+   或根据角色另起别名。该 marker 派生的宿主路径必须精确为
+   `/root/<agent_task_name>` 且 depth 为 1；这些值只由可信 rollout 回读，不能写进 accept
+   request 自报。子任务只允许一个最终 assistant 输出。再把可信 rollout identity、
    launch request 与实际 payload 的绝对路径/hash 写入 accept request，调用
    `write-transaction accept-agent --run-id ... --request-file <ABS_JSON>`；正文和用户文本
    不得出现在 shell 参数。request、launch、payload、manifest 与 review JSON 的签名和
@@ -115,6 +119,10 @@ description: 通过固定 Luna 项目 Agent 和不可变事务 receipt 起草、
 - Agent 自报、TOML 与 canned fixture 不是生产 evidence。canned 只允许 test-only 事务，
   其状态不得显示 production complete。
 - 主对话只保留问题摘要、路径/hash、字数和状态；不回传整章正文或长审查内容。
+- 当前 Desktop rollout 即使不保存明文 marker，也必须以 marker 独立派生的 exact
+  `agent_task_name` / `/root/<agent_task_name>` 绑定；只接受唯一 `final` 或
+  `final_answer` assistant 输出，忽略 commentary。旧 rollout 只有明确包含 exact marker
+  时才进入独立兼容分支，不能与新 task-path 证据做宽松 OR。
 - pending 消歧、遗漏必写节点、blocking reviewer 或 anti-AI blocker 不得越过 precommit。
 - writer final receipt 必须唯一绑定本 run 的 `polished.md`。clean review 只允许
   `polish`；Writer v2 的 `resolutions` 必须再由事务 receipt 精确绑定原 blocking issue

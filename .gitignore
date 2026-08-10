@@ -37,5 +37,7 @@ build/
 .DS_Store
 Thumbs.db
 
-# Codex project configuration is intentionally versioned:
-#   AGENTS.md, .codex/, .agents/, .codex-plugin/
+# Codex plugin source configuration is intentionally versioned:
+#   AGENTS.md, .agents/, .codex-plugin/
+# Project-scoped agents, managed hashes, pointers, and backups are local runtime state.
+.codex/

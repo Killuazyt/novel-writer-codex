@@ -21,6 +21,11 @@ from typing import Any
 from uuid import UUID
 
 from .codex_interaction import ChoiceProtocolError, build_choice_request, resolve_choice
+from .codex_m3_smoke import (
+    SmokeEvidenceError,
+    coalesce_session_meta_payloads,
+    coalesce_turn_context_payloads,
+)
 
 
 DECISION_REQUEST_SCHEMA = "webnovel-codex-decision-request/v1"
@@ -421,16 +426,28 @@ def _verify_parent_identity(
     records: Sequence[tuple[int, int, Mapping[str, Any]]],
     parent: Mapping[str, str],
 ) -> None:
-    sessions = [
-        (index, event.get("payload"))
-        for index, (_, _, event) in enumerate(records)
-        if event.get("type") == "session_meta"
-    ]
-    if len(sessions) != 1 or not isinstance(sessions[0][1], Mapping):
-        raise DecisionReceiptError("invalid_parent_identity", "parent rollout must contain one session_meta")
-    session_index, session = sessions[0]
-    if session.get("id") != parent["thread_id"]:
-        raise DecisionReceiptError("cross_thread_decision", "parent session thread id does not match the request")
+    events = [event for _, _, event in records]
+    try:
+        session_index, session = coalesce_session_meta_payloads(
+            events,
+            expected_thread_id=parent["thread_id"],
+        )
+        turn_events = [
+            event
+            for event in events[session_index + 1 :]
+            if event.get("type") == "turn_context"
+        ]
+        if not turn_events:
+            raise SmokeEvidenceError("rollout lacks turn_context after session_meta")
+        turns = coalesce_turn_context_payloads(turn_events)
+    except SmokeEvidenceError as exc:
+        code = (
+            "cross_thread_decision"
+            if str(exc) == "session_meta thread id mismatch"
+            else "invalid_parent_identity"
+        )
+        raise DecisionReceiptError(code, str(exc)) from exc
+
     source = session.get("source")
     if bool(str(session.get("parent_thread_id") or "").strip()) or (
         isinstance(source, Mapping) and source.get("subagent") is not None
@@ -440,20 +457,7 @@ def _verify_parent_identity(
     if session_model is not None and session_model != parent["model"]:
         raise DecisionReceiptError("parent_model_mismatch", "parent session model does not match the request")
 
-    turns = [
-        event.get("payload")
-        for _, _, event in records[session_index + 1 :]
-        if event.get("type") == "turn_context"
-    ]
-    if not turns or any(not isinstance(turn, Mapping) for turn in turns):
-        raise DecisionReceiptError("invalid_parent_identity", "parent rollout lacks valid turn_context")
-    turn_ids: set[str] = set()
     for turn in turns:
-        assert isinstance(turn, Mapping)
-        turn_id = str(turn.get("turn_id") or "")
-        if not turn_id or turn_id in turn_ids:
-            raise DecisionReceiptError("invalid_parent_identity", "turn_context ids are missing or duplicated")
-        turn_ids.add(turn_id)
         if turn.get("model") != parent["model"]:
             raise DecisionReceiptError("parent_model_mismatch", "parent turn model does not match the request")
         if turn.get("effort") != parent["reasoning_effort"]:

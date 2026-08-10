@@ -9,6 +9,7 @@ trust evidence is deliberately independent from Agent model evidence.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -35,6 +36,8 @@ FIXED_AGENT_NAMES = {
     "webnovel_data_agent",
 }
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_AGENT_TASK_PREFIX_RE = re.compile(r"^[a-z][a-z0-9]{1,7}$")
+_AGENT_TASK_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,94}[a-z0-9]$")
 
 
 class SmokeEvidenceError(ValueError):
@@ -62,6 +65,124 @@ def _inside(path: Path, root: Path) -> bool:
 
 def _nonempty(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def derive_agent_task_name(binding_marker: str, *, prefix: str) -> str:
+    """Derive one opaque host-visible child task name from an immutable marker."""
+
+    if not _nonempty(binding_marker):
+        raise SmokeEvidenceError("Agent binding marker must be explicit")
+    if not isinstance(prefix, str) or _AGENT_TASK_PREFIX_RE.fullmatch(prefix) is None:
+        raise SmokeEvidenceError("Agent task-name prefix is invalid")
+    digest = base64.b32encode(hashlib.sha256(binding_marker.encode("utf-8")).digest())
+    token = digest.decode("ascii").rstrip("=").lower()
+    task_name = f"{prefix}_{token}"
+    if _AGENT_TASK_NAME_RE.fullmatch(task_name) is None:
+        raise SmokeEvidenceError("derived Agent task name is invalid")
+    return task_name
+
+
+def validate_agent_task_binding(
+    spawn: Mapping[str, Any],
+    *,
+    expected_task_name: str,
+) -> None:
+    """Bind one depth-1 child rollout to the marker-derived root task path."""
+
+    if _AGENT_TASK_NAME_RE.fullmatch(str(expected_task_name or "")) is None:
+        raise SmokeEvidenceError("expected Agent task name is invalid")
+    depth = spawn.get("depth")
+    if type(depth) is not int or depth != 1:
+        raise SmokeEvidenceError("thread_spawn depth must equal 1")
+    expected_path = f"/root/{expected_task_name}"
+    if spawn.get("agent_path") != expected_path:
+        raise SmokeEvidenceError("thread_spawn agent_path does not match the bound Agent task")
+
+
+def coalesce_session_meta_payloads(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    expected_thread_id: str,
+) -> tuple[int, Mapping[str, Any]]:
+    """Return one canonical session payload after validating safe duplicates."""
+
+    if not _nonempty(expected_thread_id):
+        raise SmokeEvidenceError("expected_thread_id must be explicit")
+    session_matches = [
+        (index, event) for index, event in enumerate(events) if event.get("type") == "session_meta"
+    ]
+    if not session_matches:
+        raise SmokeEvidenceError("rollout lacks session_meta")
+
+    payloads: list[Mapping[str, Any]] = []
+    for _, event in session_matches:
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            raise SmokeEvidenceError("Codex session_meta payloads must be objects")
+        if payload.get("id") != expected_thread_id:
+            raise SmokeEvidenceError("session_meta thread id mismatch")
+        payloads.append(payload)
+
+    first_payload = dict(payloads[0])
+    first_payload.pop("memory_mode", None)
+    first_identity = _canonical_json(first_payload)
+    memory_mode_seen = False
+    memory_mode_value: str | None = None
+    for payload in payloads:
+        normalized = dict(payload)
+        has_memory_mode = "memory_mode" in normalized
+        current_memory_mode = normalized.pop("memory_mode", None)
+        if has_memory_mode:
+            canonical_memory_mode = _canonical_json(current_memory_mode)
+            if memory_mode_seen and canonical_memory_mode != memory_mode_value:
+                raise SmokeEvidenceError("conflicting session_meta memory_mode values")
+            memory_mode_seen = True
+            memory_mode_value = canonical_memory_mode
+        elif memory_mode_seen:
+            raise SmokeEvidenceError("session_meta memory_mode regressed from present to missing")
+        if _canonical_json(normalized) != first_identity:
+            raise SmokeEvidenceError("conflicting session_meta payloads")
+    return session_matches[0][0], payloads[0]
+
+
+def coalesce_turn_context_payloads(
+    turn_events: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Coalesce exact duplicate turns while preserving cross-turn model gates."""
+
+    payloads: list[Mapping[str, Any]] = []
+    identities_by_turn_id: dict[str, str] = {}
+    first_identity: tuple[object, object] | None = None
+    for event in turn_events:
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            raise SmokeEvidenceError("Codex turn_context payloads must be objects")
+        turn_id = payload.get("turn_id")
+        if not _nonempty(turn_id):
+            raise SmokeEvidenceError("turn_context turn_id is missing")
+        canonical_payload = _canonical_json(payload)
+        previous_payload = identities_by_turn_id.get(turn_id)
+        if previous_payload is not None:
+            if canonical_payload != previous_payload:
+                raise SmokeEvidenceError("conflicting turn_context payload for duplicate turn_id")
+            continue
+        turn_identity = (payload.get("model"), payload.get("effort"))
+        if first_identity is None:
+            first_identity = turn_identity
+        elif turn_identity != first_identity:
+            raise SmokeEvidenceError("conflicting turn_context model or effort")
+        identities_by_turn_id[turn_id] = canonical_payload
+        payloads.append(payload)
+    return payloads
 
 
 def _load_explicit_rollout(
@@ -95,33 +216,17 @@ def _load_explicit_rollout(
         raise SmokeEvidenceError("rollout is not UTF-8 JSONL") from exc
     if len(events) < 2 or not all(isinstance(event, Mapping) for event in events):
         raise SmokeEvidenceError("rollout lacks session_meta and turn_context events")
-    session_matches = [
-        (index, event) for index, event in enumerate(events) if event.get("type") == "session_meta"
-    ]
-    if len(session_matches) != 1:
-        raise SmokeEvidenceError("rollout must contain exactly one session_meta")
-    session_index, session_event = session_matches[0]
+    session_index, session = coalesce_session_meta_payloads(
+        events,
+        expected_thread_id=expected_thread_id,
+    )
     turn_events = [
         event for event in events[session_index + 1 :] if event.get("type") == "turn_context"
     ]
     if not turn_events:
         raise SmokeEvidenceError("rollout lacks turn_context after session_meta")
-    session = session_event.get("payload")
-    turn_payloads = [event.get("payload") for event in turn_events]
-    if any(not isinstance(payload, Mapping) for payload in turn_payloads):
-        raise SmokeEvidenceError("Codex turn_context payloads must be objects")
+    turn_payloads = coalesce_turn_context_payloads(turn_events)
     turn = turn_payloads[0]
-    if not isinstance(session, Mapping) or not isinstance(turn, Mapping):
-        raise SmokeEvidenceError("Codex event payloads must be objects")
-    first_identity = (turn.get("model"), turn.get("effort"))
-    turn_ids: set[str] = set()
-    for payload in turn_payloads:
-        turn_id = payload.get("turn_id")
-        if not _nonempty(turn_id) or str(turn_id) in turn_ids:
-            raise SmokeEvidenceError("turn_context turn_id is missing or duplicated")
-        turn_ids.add(str(turn_id))
-        if (payload.get("model"), payload.get("effort")) != first_identity:
-            raise SmokeEvidenceError("conflicting turn_context model or effort")
     return raw, session, turn
 
 
@@ -133,6 +238,7 @@ def parse_rollout_runtime_evidence(
     expected_agent_role: str,
     expected_model: str,
     expected_reasoning_effort: str,
+    expected_task_name: str | None = None,
     sessions_root: str | Path | None = None,
 ) -> VerifiedRuntimeEvidence:
     """Parse one explicitly named Codex child rollout without directory scans."""
@@ -147,6 +253,8 @@ def parse_rollout_runtime_evidence(
     spawn = subagent.get("thread_spawn") if isinstance(subagent, Mapping) else None
     if not isinstance(spawn, Mapping):
         raise SmokeEvidenceError("session_meta is not a thread_spawn subagent session")
+    if expected_task_name is not None:
+        validate_agent_task_binding(spawn, expected_task_name=expected_task_name)
 
     session_thread_id = session.get("id")
     session_parent_id = session.get("parent_thread_id")
@@ -213,6 +321,11 @@ def parse_parent_rollout_identity(
         raise SmokeEvidenceError("all expected parent rollout identities must be explicit")
     if session.get("id") != expected_thread_id:
         raise SmokeEvidenceError("parent session_meta thread id mismatch")
+    source = session.get("source")
+    if session.get("parent_thread_id") not in (None, "") or (
+        isinstance(source, Mapping) and source.get("subagent") is not None
+    ):
+        raise SmokeEvidenceError("parent rollout must be a top-level Codex task")
     session_model = session.get("model")
     if (session_model is not None and session_model != expected_model) or turn.get("model") != expected_model:
         raise SmokeEvidenceError("parent session_meta/turn_context model mismatch")

@@ -374,7 +374,7 @@ def test_parent_rollout_parsers_reject_ambiguous_or_incomplete_identity(tmp_path
         plan_transaction._parse_parent_identity(b"", **{**kwargs, "expected_effort": ""})
     with pytest.raises(PlanTransactionError, match="UTF-8 JSONL"):
         plan_transaction._parse_parent_identity(b"\xff", **kwargs)
-    with pytest.raises(PlanTransactionError, match="one session_meta"):
+    with pytest.raises(PlanTransactionError, match="lacks session_meta"):
         plan_transaction._parse_parent_identity(b"{}\n", **kwargs)
 
     def raw(*events):
@@ -384,26 +384,65 @@ def test_parent_rollout_parsers_reject_ambiguous_or_incomplete_identity(tmp_path
         "type": "session_meta",
         "payload": {"id": "parent-one", "model": "gpt-5.6-sol"},
     }
-    with pytest.raises(PlanTransactionError, match="session/turn identity"):
+    with pytest.raises(PlanTransactionError, match="lacks turn_context"):
         plan_transaction._parse_parent_identity(raw(session), **kwargs)
+    good_turn = {
+        "type": "turn_context",
+        "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "high"},
+    }
+    with pytest.raises(PlanTransactionError, match="events must be objects"):
+        plan_transaction._parse_parent_identity(raw(1, session, good_turn), **kwargs)
+    session_with_memory = {
+        "type": "session_meta",
+        "payload": {**session["payload"], "memory_mode": "enabled"},
+    }
+    assert plan_transaction._parse_parent_identity(
+        raw(session, session_with_memory, session_with_memory, good_turn),
+        **kwargs,
+    ) == {"thread_id": "parent-one", "model": "gpt-5.6-sol", "effort": "high"}
+
+    for conflicting_payload in (
+        {**session["payload"], "id": "other"},
+        {**session["payload"], "parent_thread_id": "root-task"},
+        {**session["payload"], "model": "gpt-5.6-terra"},
+        {**session["payload"], "source": "codex_cli"},
+    ):
+        conflicting_session = {"type": "session_meta", "payload": conflicting_payload}
+        with pytest.raises(PlanTransactionError, match="identity is invalid"):
+            plan_transaction._parse_parent_identity(
+                raw(session, conflicting_session, good_turn),
+                **kwargs,
+            )
+
     duplicate_turns = [
-        {"type": "turn_context", "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "high"}},
-        {"type": "turn_context", "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "high"}},
+        good_turn,
+        {
+            "timestamp": "2026-08-09T08:00:01Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "high"},
+        },
     ]
-    with pytest.raises(PlanTransactionError, match="duplicated"):
-        plan_transaction._parse_parent_identity(raw(session, *duplicate_turns), **kwargs)
+    assert plan_transaction._parse_parent_identity(
+        raw(session, *duplicate_turns),
+        **kwargs,
+    ) == {"thread_id": "parent-one", "model": "gpt-5.6-sol", "effort": "high"}
+    conflicting_duplicate_turn = {
+        "type": "turn_context",
+        "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "medium"},
+    }
+    with pytest.raises(PlanTransactionError, match="duplicate turn_id"):
+        plan_transaction._parse_parent_identity(
+            raw(session, good_turn, conflicting_duplicate_turn),
+            **kwargs,
+        )
     wrong_turn = {
         "type": "turn_context",
         "payload": {"turn_id": "one", "model": "gpt-5.6-luna", "effort": "medium"},
     }
     with pytest.raises(PlanTransactionError, match="conflicting model"):
         plan_transaction._parse_parent_identity(raw(session, wrong_turn), **kwargs)
-    good_turn = {
-        "type": "turn_context",
-        "payload": {"turn_id": "one", "model": "gpt-5.6-sol", "effort": "high"},
-    }
     wrong_session = {"type": "session_meta", "payload": {"id": "other"}}
-    with pytest.raises(PlanTransactionError, match="session identity mismatch"):
+    with pytest.raises(PlanTransactionError, match="thread id mismatch"):
         plan_transaction._parse_parent_identity(raw(wrong_session, good_turn), **kwargs)
 
     for child_payload in (

@@ -55,6 +55,8 @@ from .codex_interaction import ChoiceProtocolError, build_choice_request, resolv
 from .codex_m3_smoke import (
     MAX_ROLLOUT_BYTES,
     SmokeEvidenceError,
+    coalesce_session_meta_payloads,
+    derive_agent_task_name,
     parse_parent_rollout_identity,
     parse_rollout_runtime_evidence,
 )
@@ -388,6 +390,30 @@ def _binding_marker(run: Mapping[str, Any]) -> str:
     return f"{REVIEW_BINDING_MARKER_SCHEMA} {_canonical_json(payload)}"
 
 
+def _reviewer_agent_binding(run: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Recompute the reviewer task binding from the immutable request marker."""
+
+    binding_marker = _binding_marker(run)
+    try:
+        task_name = derive_agent_task_name(binding_marker, prefix="wnr")
+    except SmokeEvidenceError as exc:
+        raise ReviewWorkflowError("request_binding_mismatch", str(exc)) from exc
+    agent_path = f"/root/{task_name}"
+    stored_task_name = run.get("agent_task_name")
+    stored_agent_path = run.get("agent_path")
+    if stored_task_name is not None and stored_task_name != task_name:
+        raise ReviewWorkflowError(
+            "request_binding_mismatch",
+            "stored reviewer task name does not match the immutable request marker",
+        )
+    if stored_agent_path is not None and stored_agent_path != agent_path:
+        raise ReviewWorkflowError(
+            "request_binding_mismatch",
+            "stored reviewer Agent path does not match the immutable request marker",
+        )
+    return binding_marker, task_name, agent_path
+
+
 def _message_text(payload: Mapping[str, Any]) -> tuple[str, str, str | None] | None:
     message = payload.get("item") if isinstance(payload.get("item"), Mapping) else payload
     if not isinstance(message, Mapping) or message.get("type") != "message":
@@ -419,8 +445,9 @@ def _extract_bound_reviewer_outputs(
     *,
     evidence: VerifiedRuntimeEvidence,
     binding_marker: str,
+    verified_agent_path: str | None = None,
 ) -> tuple[str, ...]:
-    """Extract one or two final assistant texts occurring after the bound prompt."""
+    """Extract one or two final texts after a legacy marker or a verified Agent path."""
 
     try:
         if not rollout_path.is_file() or _is_reparse(rollout_path):
@@ -477,9 +504,18 @@ def _extract_bound_reviewer_outputs(
     if not all(isinstance(event, Mapping) for event in events):
         raise ReviewWorkflowError("invalid_runtime_evidence", "rollout events must be JSON objects")
 
-    binding_seen = False
+    has_legacy_marker = False
+    for event in events:
+        if event.get("type") != "response_item" or not isinstance(event.get("payload"), Mapping):
+            continue
+        parsed = _message_text(event["payload"])
+        if parsed is not None and parsed[0] == "user" and binding_marker in parsed[1]:
+            has_legacy_marker = True
+            break
+
+    legacy_binding_seen = False
     response_outputs: list[str] = []
-    event_outputs: list[str] = []
+    legacy_event_outputs: list[str] = []
     for event in events:
         event_type = event.get("type")
         payload = event.get("payload")
@@ -491,31 +527,39 @@ def _extract_bound_reviewer_outputs(
                 continue
             role, text, phase = parsed
             if role == "user" and binding_marker in text:
-                binding_seen = True
+                legacy_binding_seen = True
                 continue
             if (
-                binding_seen
-                and role == "assistant"
-                and phase in {None, "final", "final_answer"}
+                role == "assistant"
+                and phase in {"final", "final_answer"}
                 and text.strip()
+                and (
+                    legacy_binding_seen
+                    if has_legacy_marker
+                    else verified_agent_path is not None
+                )
             ):
                 response_outputs.append(text)
             continue
-        if event_type == "event_msg" and binding_seen and payload.get("type") == "agent_message":
+        if (
+            event_type == "event_msg"
+            and legacy_binding_seen
+            and payload.get("type") == "agent_message"
+        ):
             text = payload.get("message")
             if not isinstance(text, str):
                 text = payload.get("text")
-            if isinstance(text, str) and text.strip() and text not in event_outputs:
-                event_outputs.append(text)
-    if not binding_seen:
+            if isinstance(text, str) and text.strip() and text not in legacy_event_outputs:
+                legacy_event_outputs.append(text)
+    if not has_legacy_marker and verified_agent_path is None:
         raise ReviewWorkflowError(
             "runtime_request_unbound",
-            "reviewer rollout does not contain the exact run/request binding prompt",
+            "reviewer rollout has neither an exact legacy marker nor a verified Agent path binding",
         )
-    # response_item is the durable assistant-message record.  event_msg may be
-    # a streaming duplicate, so it is used only for older rollouts that contain
-    # no bound response_item assistant output at all.
-    outputs = response_outputs if response_outputs else event_outputs
+    # response_item is the durable current-host record.  Only the explicit
+    # marker branch may fall back to legacy event_msg traces, whose streaming
+    # messages cannot otherwise be separated from commentary.
+    outputs = response_outputs if response_outputs else legacy_event_outputs
     if not 1 <= len(outputs) <= 2:
         raise ReviewWorkflowError(
             "invalid_reviewer_attempt_count",
@@ -697,17 +741,16 @@ def _verified_user_choice(
         rollout_path,
         expected_sha256=evidence.raw_sha256,
     )
-    session_payloads = [
-        event.get("payload")
-        for _, _, event in records
-        if event.get("type") == "session_meta"
-    ]
-    if len(session_payloads) != 1 or not isinstance(session_payloads[0], Mapping):
+    try:
+        _, parent_session = coalesce_session_meta_payloads(
+            [event for _, _, event in records],
+            expected_thread_id=parent_thread_id,
+        )
+    except SmokeEvidenceError as exc:
         raise ReviewWorkflowError(
             "invalid_decision_receipt",
-            "decision receipt must identify exactly one parent session",
-        )
-    parent_session = session_payloads[0]
+            f"decision receipt parent session identity is invalid: {exc}",
+        ) from exc
     source = parent_session.get("source")
     if (
         (isinstance(source, Mapping) and isinstance(source.get("subagent"), Mapping))
@@ -1214,7 +1257,14 @@ def prepare_review(
         "updated_at": created_at,
     }
     binding_marker = _binding_marker(run)
+    try:
+        agent_task_name = derive_agent_task_name(binding_marker, prefix="wnr")
+    except SmokeEvidenceError as exc:
+        raise ReviewWorkflowError("request_binding_mismatch", str(exc)) from exc
+    agent_path = f"/root/{agent_task_name}"
     run["binding_marker_sha256"] = hashlib.sha256(binding_marker.encode("utf-8")).hexdigest()
+    run["agent_task_name"] = agent_task_name
+    run["agent_path"] = agent_path
     try:
         with locked_ledger(root, strict=True) as ledger:
             conflict = _active_review_conflict(ledger, chapter)
@@ -1265,6 +1315,8 @@ def prepare_review(
         "request_file": str(request_path),
         "request_sha256": request_signature["sha256"],
         "binding_marker": binding_marker,
+        "agent_task_name": agent_task_name,
+        "agent_path": agent_path,
         "agent_name": "webnovel_reviewer",
         "requested_model": route["steps"][0]["requested_model"],
         "requested_reasoning_effort": route["steps"][0]["requested_reasoning_effort"],
@@ -1367,6 +1419,11 @@ def _verified_runtime_evidence(
 ) -> VerifiedReviewerExecution:
     trusted_root = _trusted_codex_sessions_root()
     try:
+        expected_task_name = derive_agent_task_name(binding_marker, prefix="wnr")
+    except SmokeEvidenceError as exc:
+        raise ReviewWorkflowError("invalid_runtime_evidence", str(exc)) from exc
+    expected_agent_path = f"/root/{expected_task_name}"
+    try:
         supplied_root_raw = Path(str(runtime["sessions_root"]))
         _reject_reparse_chain(
             supplied_root_raw,
@@ -1403,6 +1460,7 @@ def _verified_runtime_evidence(
             expected_agent_role=str(expected_step["agent_name"]),
             expected_model=str(expected_step["requested_model"]),
             expected_reasoning_effort=str(expected_step["requested_reasoning_effort"]),
+            expected_task_name=expected_task_name,
             sessions_root=trusted_root,
         )
     except (KeyError, SmokeEvidenceError) as exc:
@@ -1411,8 +1469,38 @@ def _verified_runtime_evidence(
         rollout_path,
         evidence=evidence,
         binding_marker=binding_marker,
+        verified_agent_path=expected_agent_path,
     )
     return VerifiedReviewerExecution(runtime=evidence, raw_outputs=outputs)
+
+
+def _reject_reused_runtime_reference(
+    root: Path,
+    run_id: str,
+    runtime: Mapping[str, Any],
+) -> None:
+    """Preserve the pre-existing cross-run reuse gate before task-path parsing."""
+
+    child_thread_id = str(runtime.get("child_thread_id") or "")
+    try:
+        rollout_path = str(Path(str(runtime.get("rollout_path") or "")).resolve(strict=True))
+    except OSError:
+        return
+    with locked_ledger(root, strict=True) as ledger:
+        for other_id, other in ledger["review"]["runs"].items():
+            if other_id == run_id or not isinstance(other, Mapping):
+                continue
+            other_evidence = other.get("runtime_evidence")
+            if not isinstance(other_evidence, Mapping):
+                continue
+            if (
+                other_evidence.get("child_thread_id") == child_thread_id
+                or other_evidence.get("rollout_path") == rollout_path
+            ):
+                raise ReviewWorkflowError(
+                    "runtime_evidence_reused",
+                    f"reviewer rollout or child thread is already bound to run {other_id}",
+                )
 
 
 def _claim_runtime_evidence(
@@ -1426,12 +1514,18 @@ def _claim_runtime_evidence(
     evidence = execution.runtime
     rollout_path = str(Path(str(runtime["rollout_path"])).resolve(strict=True))
     output_hashes = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in execution.raw_outputs]
+    try:
+        agent_task_name = derive_agent_task_name(binding_marker, prefix="wnr")
+    except SmokeEvidenceError as exc:
+        raise ReviewWorkflowError("invalid_runtime_evidence", str(exc)) from exc
     claim = {
         "evidence_source": evidence.evidence_source,
         "evidence_sha256": evidence.raw_sha256,
         "rollout_path": rollout_path,
         "child_thread_id": evidence.thread_id,
         "parent_thread_id": evidence.parent_thread_id,
+        "agent_task_name": agent_task_name,
+        "agent_path": f"/root/{agent_task_name}",
         "binding_marker_sha256": hashlib.sha256(binding_marker.encode("utf-8")).hexdigest(),
         "output_sha256s": output_hashes,
     }
@@ -1464,6 +1558,53 @@ def _claim_runtime_evidence(
         run["runtime_evidence"] = claim
         run["updated_at"] = _now_iso()
     return claim
+
+
+def _reverify_runtime_receipt(root: Path, run: Mapping[str, Any]) -> None:
+    """Revalidate a persisted reviewer receipt, including its task-name path."""
+
+    claim = run.get("runtime_evidence")
+    if not isinstance(claim, Mapping):
+        return
+    binding_marker, agent_task_name, agent_path = _reviewer_agent_binding(run)
+    marker_sha256 = hashlib.sha256(binding_marker.encode("utf-8")).hexdigest()
+    if run.get("binding_marker_sha256") != marker_sha256:
+        raise ReviewWorkflowError("request_binding_mismatch", "review request binding marker changed")
+    expected_step = {
+        "agent_name": run.get("agent_name"),
+        "requested_model": run.get("requested_model"),
+        "requested_reasoning_effort": run.get("requested_reasoning_effort"),
+    }
+    execution = _verified_runtime_evidence(
+        {
+            "rollout_path": claim.get("rollout_path"),
+            "sessions_root": str(_trusted_codex_sessions_root()),
+            "child_thread_id": claim.get("child_thread_id"),
+            "parent_thread_id": claim.get("parent_thread_id"),
+        },
+        expected_step,
+        expected_parent_thread_id=str(run.get("parent_thread_id") or ""),
+        binding_marker=binding_marker,
+    )
+    current = {
+        "evidence_source": execution.runtime.evidence_source,
+        "evidence_sha256": execution.runtime.raw_sha256,
+        "rollout_path": str(Path(str(claim.get("rollout_path") or "")).resolve(strict=True)),
+        "child_thread_id": execution.runtime.thread_id,
+        "parent_thread_id": execution.runtime.parent_thread_id,
+        "agent_task_name": agent_task_name,
+        "agent_path": agent_path,
+        "binding_marker_sha256": marker_sha256,
+        "output_sha256s": [
+            hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for text in execution.raw_outputs
+        ],
+    }
+    if any(claim.get(field) != value for field, value in current.items()):
+        raise ReviewWorkflowError(
+            "runtime_evidence_changed",
+            "stored reviewer runtime receipt no longer matches its bound rollout",
+        )
 
 
 def _runtime_envelope(
@@ -1639,13 +1780,14 @@ def accept_review(
                 details={"changed_paths": protected.get("changed_paths") or []},
             )
 
-        binding_marker = _binding_marker(run)
+        binding_marker, _agent_task_name, _agent_path = _reviewer_agent_binding(run)
         if hashlib.sha256(binding_marker.encode("utf-8")).hexdigest() != run.get(
             "binding_marker_sha256"
         ):
             raise ReviewWorkflowError("request_binding_mismatch", "review request binding marker changed")
         _route_payload, step = _current_route(root, run)
         try:
+            _reject_reused_runtime_reference(root, run_id, request["runtime"])
             execution = _verified_runtime_evidence(
                 request["runtime"],
                 step,
@@ -1956,7 +2098,10 @@ def _validate_persistence_receipt(
                 "metrics_artifact_mismatch",
                 "review metrics artifact differs from the accepted review",
             )
-        from scripts.review_pipeline import render_review_report
+        try:
+            from review_pipeline import render_review_report
+        except ImportError:
+            from scripts.review_pipeline import render_review_report
 
         report_raw = _signed_artifact_bytes(
             root,
@@ -2223,7 +2368,10 @@ def _db_record_matches(root: Path, metrics: Mapping[str, Any]) -> bool:
 
 
 def _save_metrics(root: Path, metrics: Mapping[str, Any]) -> None:
-    from scripts.review_pipeline import _build_review_metrics_record
+    try:
+        from review_pipeline import _build_review_metrics_record
+    except ImportError:
+        from scripts.review_pipeline import _build_review_metrics_record
 
     _recover_sqlite_wal_if_needed(root)
     _validate_sqlite_bundle(root)
@@ -2247,6 +2395,8 @@ def persist_review_run(
     run = get_review_run(root, run_id)
     if run is None:
         raise ReviewWorkflowError("run_not_found", f"review run does not exist: {run_id}")
+    if isinstance(run.get("runtime_evidence"), Mapping):
+        _reverify_runtime_receipt(root, run)
     if run.get("status") == "persisted":
         if run.get("has_blocking"):
             if (run.get("decision") or {}).get("selected") != "report_only":
@@ -2362,7 +2512,10 @@ def persist_review_run(
     try:
         normalized, result = _validate_core_review_artifacts(root, run)
         metrics = _metrics_payload(run, result)
-        from scripts.review_pipeline import render_review_report
+        try:
+            from review_pipeline import render_review_report
+        except ImportError:
+            from scripts.review_pipeline import render_review_report
 
         report_payload = {
             "chapter": run["chapter"],
@@ -2453,6 +2606,8 @@ def decide_review(
         if run is None:
             raise ReviewWorkflowError("run_not_found", f"review run does not exist: {run_id}")
         _current_codex_thread_id(run.get("parent_thread_id"))
+        if isinstance(run.get("runtime_evidence"), Mapping):
+            _reverify_runtime_receipt(root, run)
         decision = run.get("decision")
         if run.get("status") != "awaiting_decision" or not isinstance(decision, Mapping):
             raise ReviewWorkflowError("decision_not_pending", "review run has no pending blocking decision")
@@ -2546,6 +2701,8 @@ def resume_review(
     if run is None:
         raise ReviewWorkflowError("run_not_found", f"review run does not exist: {run_id}")
     status = str(run.get("status") or "")
+    if status != "prepared" and isinstance(run.get("runtime_evidence"), Mapping):
+        _reverify_runtime_receipt(root, run)
     if status in {"validated", "failed_persistence", "persisted"}:
         return persist_review_run(root, run_id=run_id, _lock_held=True)
     if status == "awaiting_decision":
@@ -2569,7 +2726,9 @@ def resume_review(
             "review_mode": run.get("review_mode"),
             "request_file": str(_run_dir(root, run_id) / "request.json"),
             "request_sha256": run.get("request_sha256"),
-            "binding_marker": _binding_marker(run),
+            "binding_marker": _reviewer_agent_binding(run)[0],
+            "agent_task_name": _reviewer_agent_binding(run)[1],
+            "agent_path": _reviewer_agent_binding(run)[2],
             "agent_name": run.get("agent_name"),
             "requested_model": run.get("requested_model"),
             "requested_reasoning_effort": run.get("requested_reasoning_effort"),

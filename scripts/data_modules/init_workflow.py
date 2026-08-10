@@ -48,12 +48,14 @@ from .codex_agent_runtime import (
 from .codex_interaction import ChoiceProtocolError, build_choice_request, resolve_choice
 from .codex_m3_smoke import (
     SmokeEvidenceError,
+    derive_agent_task_name,
     parse_parent_rollout_identity,
     parse_rollout_runtime_evidence,
 )
 from .init_request import (
     INIT_REQUEST_SCHEMA,
     build_reference_adoption_confirmation,
+    build_reference_binding_marker,
     load_init_request,
 )
 from .project_phase import PHASE_PLAN_IN_PROGRESS, resolve_project_phase
@@ -223,18 +225,29 @@ __pycache__/
 .webnovel/*.lock
 .webnovel/*.bak
 """
-_ENV_EXAMPLE = """# Webnovel Writer 配置示例（复制为 .env 后填写）
-# 注意：请勿将包含真实 API_KEY 的 .env 提交到版本库。
+_ENV_EXAMPLE = """# Novel Writer Codex 配置示例（复制为 .env 后按需调整）
+# 默认使用显式下载到本机的模型；写章/runtime 不会自动联网下载。
 
-# Embedding
-EMBED_BASE_URL=https://api-inference.modelscope.cn/v1
-EMBED_MODEL=Qwen/Qwen3-Embedding-8B
-EMBED_API_KEY=
+# Local Embedding（推荐）
+EMBED_API_TYPE=local
+EMBED_MODEL=Qwen/Qwen3-Embedding-0.6B
+# 留空时使用 <WEBNOVEL_HOME>/models/Qwen3-Embedding-0.6B
+EMBED_MODEL_PATH=
+EMBED_DEVICE=auto
+EMBED_BATCH_SIZE=8
+EMBED_NORMALIZE=true
 
-# Rerank
-RERANK_BASE_URL=https://api.jina.ai/v1
-RERANK_MODEL=jina-reranker-v3
-RERANK_API_KEY=
+# 纯本地模式默认不调用云端 rerank，混合检索回退到 RRF。
+RERANK_API_TYPE=disabled
+
+# 如需切回 OpenAI-compatible 远端服务，再取消注释并填写密钥：
+# EMBED_API_TYPE=openai
+# EMBED_BASE_URL=https://api-inference.modelscope.cn/v1
+# EMBED_API_KEY=
+# RERANK_API_TYPE=openai
+# RERANK_BASE_URL=https://api.jina.ai/v1
+# RERANK_MODEL=jina-reranker-v3
+# RERANK_API_KEY=
 """
 
 
@@ -401,8 +414,13 @@ def _stable_regular_bytes(
     return raw, resolved
 
 
-def _rollout_final_json(raw: bytes, *, binding_marker: str) -> dict[str, Any]:
-    """Extract exactly one final assistant JSON object from a Codex rollout."""
+def _rollout_final_json(
+    raw: bytes,
+    *,
+    binding_marker: str,
+    task_binding_verified: bool = False,
+) -> dict[str, Any]:
+    """Extract one final JSON after a legacy marker or verified host task binding."""
 
     if raw.startswith(b"\xef\xbb\xbf"):
         raise InitWorkflowError("reference rollout must be UTF-8 without BOM")
@@ -448,9 +466,9 @@ def _rollout_final_json(raw: bytes, *, binding_marker: str) -> dict[str, Any]:
         ):
             raise InitWorkflowError("reference rollout final answer must contain one output_text")
         finals.append((event_index, text))
-    if len(binding_indexes) != 1:
+    if len(binding_indexes) > 1 or (not binding_indexes and not task_binding_verified):
         raise InitWorkflowError("reference rollout must contain exactly one bound invocation marker")
-    if len(finals) != 1 or binding_indexes[0] >= finals[0][0]:
+    if len(finals) != 1 or (binding_indexes and binding_indexes[0] >= finals[0][0]):
         raise InitWorkflowError("reference rollout must contain exactly one final assistant answer")
     try:
         output = json.loads(finals[0][1])
@@ -671,6 +689,19 @@ def _validate_reference_adoption(request: Mapping[str, Any]) -> dict[str, Any] |
     if not isinstance(step, Mapping) or step.get("contract_hash") != reference.get("contract_hash"):
         raise InitWorkflowError("reference deconstruction contract hash changed")
 
+    expected_binding_marker = build_reference_binding_marker(dict(reference))
+    if reference.get("binding_marker") != expected_binding_marker:
+        raise InitWorkflowError(
+            "reference binding marker is stale or scoped to different source/route inputs"
+        )
+    try:
+        expected_task_name = derive_agent_task_name(
+            expected_binding_marker,
+            prefix="wni",
+        )
+    except SmokeEvidenceError as exc:
+        raise InitWorkflowError(f"reference Agent task binding is invalid: {exc}") from exc
+
     rollout_raw, rollout_path = _stable_regular_bytes(
         Path(str(runtime["rollout_path"])),
         max_bytes=MAX_REFERENCE_ROLLOUT_BYTES,
@@ -689,6 +720,7 @@ def _validate_reference_adoption(request: Mapping[str, Any]) -> dict[str, Any] |
             expected_agent_role=str(step["agent_name"]),
             expected_model=str(step["requested_model"]),
             expected_reasoning_effort=str(step["requested_reasoning_effort"]),
+            expected_task_name=expected_task_name,
             sessions_root=trusted_sessions_root,
         )
     except (KeyError, SmokeEvidenceError) as exc:
@@ -708,7 +740,8 @@ def _validate_reference_adoption(request: Mapping[str, Any]) -> dict[str, Any] |
         raise InitWorkflowError("reference rollout changed after identity verification")
     rollout_output = _rollout_final_json(
         rollout_raw,
-        binding_marker=str(reference.get("binding_marker") or ""),
+        binding_marker=expected_binding_marker,
+        task_binding_verified=True,
     )
     if _canonical_sha256(rollout_output) != reference.get("output_sha256"):
         raise InitWorkflowError("reference rollout output hash does not match output_sha256")

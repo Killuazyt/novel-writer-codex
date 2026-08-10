@@ -111,6 +111,19 @@ def test_project_phase_detects_chapter_contract_ready(tmp_path):
     assert snapshot.missing_contract_files == ()
 
 
+def test_project_phase_ignores_future_planned_contracts_when_selecting_next_chapter(tmp_path):
+    _make_init_ready(tmp_path)
+    for chapter in range(1, 11):
+        _make_contracts(tmp_path, chapter=chapter)
+
+    snapshot = resolve_project_phase(tmp_path)
+
+    assert snapshot.phase == PHASE_CHAPTER_CONTRACT_READY
+    assert snapshot.latest_accepted_chapter == 0
+    assert snapshot.target_chapter == 1
+    assert snapshot.missing_contract_files == ()
+
+
 def test_project_phase_detects_draft_and_ready_to_commit(tmp_path):
     _make_init_ready(tmp_path)
     _make_contracts(tmp_path, chapter=1)

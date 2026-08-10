@@ -3,9 +3,10 @@
 """
 Data Modules - 配置文件
 
-API 配置通过环境变量读取（支持 .env 文件）：
-- EMBED_BASE_URL, EMBED_MODEL, EMBED_API_KEY
-- RERANK_BASE_URL, RERANK_MODEL, RERANK_API_KEY
+Embedding/Rerank 配置通过环境变量读取（支持 .env 文件）：
+- 本地默认：EMBED_API_TYPE, EMBED_MODEL_PATH, EMBED_MODEL, EMBED_DEVICE
+- 远端兼容：EMBED_BASE_URL, EMBED_API_KEY
+- Rerank：RERANK_API_TYPE, RERANK_BASE_URL, RERANK_MODEL, RERANK_API_KEY
 """
 
 import os
@@ -20,6 +21,26 @@ from .context_weights import TEMPLATE_WEIGHTS_DYNAMIC_DEFAULT
 
 
 _DOTENV_MANAGED_VALUES: dict[str, str] = {}
+
+
+def _env_text(name: str, default: str) -> str:
+    value = str(os.getenv(name, default) or "").strip()
+    return value or default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().upper() in {"1", "ON", "YES", "TRUE"}
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(str(os.getenv(name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 def _get_user_claude_root() -> Path:
     """Compatibility alias for the legacy, read-only Claude home."""
@@ -163,18 +184,46 @@ class DataModulesConfig:
         return self.story_system_dir / "anti_patterns.json"
 
 
-    # ================= Embedding API 配置 =================
-    embed_api_type: str = "openai"
+    # ================= Embedding 配置 =================
+    # 默认只加载显式下载到本机的模型；runtime 不会在写章期间自动下载。
+    embed_api_type: str = field(
+        default_factory=lambda: _env_text("EMBED_API_TYPE", "local").lower()
+    )
     embed_base_url: str = field(default_factory=lambda: os.getenv("EMBED_BASE_URL", "https://api-inference.modelscope.cn/v1"))
-    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-8B"))
+    embed_model: str = field(default_factory=lambda: os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"))
     embed_api_key: str = field(default_factory=lambda: os.getenv("EMBED_API_KEY", ""))
+    embed_model_path: str = field(default_factory=lambda: os.getenv("EMBED_MODEL_PATH", ""))
+    embed_device: str = field(
+        default_factory=lambda: _env_text("EMBED_DEVICE", "auto").lower()
+    )
+    embed_normalize: bool = field(
+        default_factory=lambda: _env_bool("EMBED_NORMALIZE", True)
+    )
+
+    @property
+    def resolved_embed_model_path(self) -> Path:
+        configured = str(self.embed_model_path or "").strip()
+        if configured:
+            expanded = os.path.expandvars(configured)
+            candidate = normalize_windows_path(expanded).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.project_root / candidate
+            return candidate.resolve()
+        return (
+            resolve_webnovel_home()
+            / "models"
+            / "Qwen3-Embedding-0.6B"
+        ).expanduser().resolve()
 
     @property
     def embed_url(self) -> str:
         return self.embed_base_url
 
     # ================= Rerank API 配置 =================
-    rerank_api_type: str = "openai"
+    # 本地默认不调用云端 rerank；混合检索会回退到 RRF 排序。
+    rerank_api_type: str = field(
+        default_factory=lambda: _env_text("RERANK_API_TYPE", "disabled").lower()
+    )
     rerank_base_url: str = field(default_factory=lambda: os.getenv("RERANK_BASE_URL", "https://api.jina.ai/v1"))
     rerank_model: str = field(default_factory=lambda: os.getenv("RERANK_MODEL", "jina-reranker-v3"))
     rerank_api_key: str = field(default_factory=lambda: os.getenv("RERANK_API_KEY", ""))
@@ -184,9 +233,18 @@ class DataModulesConfig:
         return self.rerank_base_url
 
     # ================= 并发配置 =================
-    embed_concurrency: int = 64
-    rerank_concurrency: int = 32
-    embed_batch_size: int = 64
+    embed_concurrency: int = field(
+        default_factory=lambda: _env_positive_int(
+            "EMBED_CONCURRENCY",
+            1 if _env_text("EMBED_API_TYPE", "local").lower() == "local" else 64,
+        )
+    )
+    rerank_concurrency: int = field(
+        default_factory=lambda: _env_positive_int("RERANK_CONCURRENCY", 32)
+    )
+    embed_batch_size: int = field(
+        default_factory=lambda: _env_positive_int("EMBED_BATCH_SIZE", 8)
+    )
 
     # ================= 超时配置 =================
     cold_start_timeout: int = 300

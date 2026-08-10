@@ -48,8 +48,20 @@ from .codex_decision_receipt import (
     select_scope_bound_decision,
     verify_scope_bound_decision_receipt,
 )
+from .codex_m3_smoke import (
+    SmokeEvidenceError,
+    coalesce_session_meta_payloads,
+    coalesce_turn_context_payloads,
+    derive_agent_task_name,
+    validate_agent_task_binding,
+)
 from .project_phase import contract_files_for_chapter
-from .projection_log import commit_hash, latest_projection_run, projection_status_from_run
+from .projection_log import (
+    commit_hash,
+    latest_projection_run,
+    projection_status_from_run,
+    read_projection_runs,
+)
 from .review_schema import ReviewSchemaError, parse_review_output
 from .write_gates import run_write_gate
 
@@ -62,6 +74,7 @@ AGENT_LAUNCH_REQUEST_SCHEMA = "webnovel-write-agent-launch-request/v1"
 AGENT_LAUNCH_INPUT_SCHEMA = "webnovel-write-agent-launch-input/v1"
 AGENT_PROMPT_MARKER_SCHEMA = "webnovel-write-agent-prompt-marker/v1"
 AGENT_PROMPT_MARKER_PREFIX = "WEBNOVEL_WRITE_AGENT_REQUEST "
+AGENT_TASK_NAME_PREFIX = "wnw"
 STAGE_REQUEST_SCHEMA = "webnovel-write-stage-request/v1"
 TARGETED_FIX_RESOLUTION_SCHEMA = "webnovel-write-targeted-fix-resolution/v1"
 TARGETED_FIX_DECISION_KIND = "write_targeted_fix"
@@ -560,14 +573,18 @@ def _current_parent_host_evidence() -> dict[str, Any]:
         events = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WriteTransactionError("current parent rollout is not UTF-8 JSONL") from exc
-    sessions = [
-        event.get("payload")
-        for event in events
-        if isinstance(event, Mapping) and event.get("type") == "session_meta"
-    ]
-    if len(sessions) != 1 or not isinstance(sessions[0], Mapping) or sessions[0].get("id") != thread_id:
-        raise WriteTransactionError("current parent rollout session identity does not match CODEX_THREAD_ID")
-    session = sessions[0]
+    if not all(isinstance(event, Mapping) for event in events):
+        raise WriteTransactionError("current parent rollout events must be JSON objects")
+    try:
+        _, session = coalesce_session_meta_payloads(
+            events,
+            expected_thread_id=thread_id,
+        )
+    except SmokeEvidenceError as exc:
+        raise WriteTransactionError(
+            "current parent rollout session identity does not match CODEX_THREAD_ID: "
+            f"{exc}"
+        ) from exc
     source = session.get("source")
     if (
         bool(str(session.get("parent_thread_id") or "").strip())
@@ -764,6 +781,15 @@ def build_agent_prompt_marker(
     ).decode("utf-8")
 
 
+def _task_name_from_prompt_marker(marker: str) -> str:
+    """Derive the host task name without accepting a caller-supplied alias."""
+
+    try:
+        return derive_agent_task_name(marker, prefix=AGENT_TASK_NAME_PREFIX)
+    except SmokeEvidenceError as exc:
+        raise WriteTransactionError(f"Agent prompt marker cannot bind a task name: {exc}") from exc
+
+
 def prepare_agent_launch_request(
     project_root: str | Path,
     run_id: str,
@@ -824,11 +850,13 @@ def prepare_agent_launch_request(
         stage=stage,
         launch_request={"path": signature["path"], "sha256": signature["sha256"]},
     )
+    agent_task_name = _task_name_from_prompt_marker(marker)
     return {
         "status": "ready",
         "stage": stage,
         "launch_request": {"path": signature["path"], "sha256": signature["sha256"]},
         "prompt_marker": marker,
+        "agent_task_name": agent_task_name,
     }
 
 
@@ -856,6 +884,7 @@ def _parse_bound_agent_rollout(
     expected_model: str,
     expected_effort: str,
     expected_marker: str,
+    expected_task_name: str | None,
 ) -> tuple[VerifiedRuntimeEvidence, str]:
     if thread_id not in rollout_path.name or rollout_path.suffix.lower() != ".jsonl":
         raise WriteTransactionError("rollout filename must identify the expected child thread")
@@ -863,22 +892,25 @@ def _parse_bound_agent_rollout(
         events = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WriteTransactionError("rollout is not UTF-8 JSONL") from exc
-    sessions = [
-        (index, event)
-        for index, event in enumerate(events)
-        if isinstance(event, Mapping) and event.get("type") == "session_meta"
-    ]
-    if len(sessions) != 1:
-        raise WriteTransactionError("rollout must contain exactly one session_meta")
-    session_index, session_event = sessions[0]
-    session = session_event.get("payload")
-    if not isinstance(session, Mapping):
-        raise WriteTransactionError("rollout session_meta payload is invalid")
+    if not all(isinstance(event, Mapping) for event in events):
+        raise WriteTransactionError("rollout events must be JSON objects")
+    try:
+        session_index, session = coalesce_session_meta_payloads(
+            events,
+            expected_thread_id=thread_id,
+        )
+    except SmokeEvidenceError as exc:
+        raise WriteTransactionError(f"rollout session identity is invalid: {exc}") from exc
     source = session.get("source")
     subagent = source.get("subagent") if isinstance(source, Mapping) else None
     spawn = subagent.get("thread_spawn") if isinstance(subagent, Mapping) else None
     if not isinstance(spawn, Mapping):
         raise WriteTransactionError("rollout is not a Codex child Agent session")
+    if expected_task_name is not None:
+        try:
+            validate_agent_task_binding(spawn, expected_task_name=expected_task_name)
+        except SmokeEvidenceError as exc:
+            raise WriteTransactionError(f"rollout Agent task binding is invalid: {exc}") from exc
     if (
         session.get("id") != thread_id
         or session.get("parent_thread_id") != parent_thread_id
@@ -887,31 +919,28 @@ def _parse_bound_agent_rollout(
         or (session.get("model") is not None and session.get("model") != expected_model)
     ):
         raise WriteTransactionError("rollout child/parent/role/model identity mismatch")
-    turns = [
-        event.get("payload")
+    turn_events = [
+        event
         for event in events[session_index + 1 :]
-        if isinstance(event, Mapping) and event.get("type") == "turn_context"
+        if event.get("type") == "turn_context"
     ]
-    seen_turns: set[str] = set()
-    if not turns:
+    if not turn_events:
         raise WriteTransactionError("rollout lacks turn_context")
+    try:
+        turns = coalesce_turn_context_payloads(turn_events)
+    except SmokeEvidenceError as exc:
+        raise WriteTransactionError(f"rollout turn identity is invalid: {exc}") from exc
     for turn in turns:
-        if not isinstance(turn, Mapping):
-            raise WriteTransactionError("rollout turn_context payload is invalid")
-        turn_id = str(turn.get("turn_id") or "")
-        if not turn_id or turn_id in seen_turns:
-            raise WriteTransactionError("rollout turn_context ids are missing or duplicated")
-        seen_turns.add(turn_id)
         if turn.get("model") != expected_model or turn.get("effort") != expected_effort:
             raise WriteTransactionError("rollout model or effort changed within the child task")
 
-    marker_index = -1
+    marker_indexes: list[int] = []
     prompt_text = spawn.get("prompt")
     if isinstance(prompt_text, str) and expected_marker in prompt_text.splitlines():
-        marker_index = session_index
-    assistant_outputs: list[str] = []
+        marker_indexes.append(session_index)
+    response_messages: list[tuple[int, Mapping[str, Any], str]] = []
     for index, event in enumerate(events[session_index + 1 :], start=session_index + 1):
-        if not isinstance(event, Mapping) or event.get("type") != "response_item":
+        if event.get("type") != "response_item":
             continue
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
@@ -920,12 +949,38 @@ def _parse_bound_agent_rollout(
         if text is None:
             continue
         if payload.get("role") == "user" and expected_marker in text.splitlines():
-            if marker_index >= 0:
-                raise WriteTransactionError("rollout contains duplicate Agent prompt markers")
-            marker_index = index
-        elif payload.get("role") == "assistant" and marker_index >= 0 and index > marker_index:
-            assistant_outputs.append(text)
-    if marker_index < 0 or len(assistant_outputs) != 1 or not assistant_outputs[0]:
+            marker_indexes.append(index)
+        response_messages.append((index, payload, text))
+    if len(marker_indexes) > 1:
+        raise WriteTransactionError("rollout contains duplicate Agent prompt markers")
+
+    assistant_outputs: list[str] = []
+    if marker_indexes:
+        # Explicit-marker compatibility for older Desktop rollouts.  A real
+        # legacy record may omit phase, while newer hosts label durable output
+        # as final/final_answer.  Explicit commentary is never payload evidence.
+        marker_index = marker_indexes[0]
+        assistant_outputs = [
+            text
+            for index, payload, text in response_messages
+            if index > marker_index
+            and payload.get("role") == "assistant"
+            and payload.get("phase") in {None, "final", "final_answer"}
+            and text
+        ]
+    elif expected_task_name is not None:
+        # Current Desktop child rollouts can omit the plaintext prompt.  The
+        # marker-derived /root/<task_name> is then the invocation binding, and
+        # only the durable final assistant record is payload evidence.
+        assistant_outputs = [
+            text
+            for _, payload, text in response_messages
+            if payload.get("role") == "assistant"
+            and payload.get("phase") in {"final", "final_answer"}
+            and text
+        ]
+
+    if len(assistant_outputs) != 1 or not assistant_outputs[0]:
         if len(assistant_outputs) > 1:
             raise WriteTransactionError("rollout contains multiple assistant outputs after the bound marker")
         raise WriteTransactionError("rollout lacks the bound prompt marker or final assistant output")
@@ -1035,6 +1090,40 @@ def _accepted_commit(root: Path, chapter: int) -> dict[str, Any] | None:
     payload = _read_json(path)
     meta = payload.get("meta") if isinstance(payload.get("meta"), Mapping) else {}
     return payload if meta.get("status") == "accepted" else None
+
+
+def _accepted_commit_stable_snapshot(
+    root: Path,
+    chapter: int,
+) -> dict[str, Any] | None:
+    """Read one accepted commit once and derive every binding from those bytes."""
+
+    path = (
+        root / ".story-system" / "commits" / f"chapter_{chapter:03d}.commit.json"
+    ).resolve()
+    commits_root = root / ".story-system" / "commits"
+    if not path.is_file():
+        return None
+    raw, stat_result = _stable_read_snapshot(
+        path,
+        trusted_root=commits_root,
+        max_bytes=MAX_CONTROL_BYTES,
+    )
+    payload = _json_object_from_bytes(raw, path)
+    meta = payload.get("meta") if isinstance(payload.get("meta"), Mapping) else {}
+    if meta.get("status") != "accepted":
+        return None
+    return {
+        "payload": payload,
+        "signature": {
+            "path": str(path),
+            "exists": True,
+            "sha256": _sha256_bytes(raw),
+            "bytes": len(raw),
+            "mtime_ns": stat_result.st_mtime_ns,
+        },
+        "commit_hash": commit_hash(payload),
+    }
 
 
 def begin_write_transaction(
@@ -1451,7 +1540,12 @@ def record_write_stage(
             }
             receipt["receipt_sha256"] = _receipt_hash(receipt)
             if not transaction.get("test_only"):
-                _replay_completed_receipts(root, transaction, [*receipts, receipt])
+                _replay_completed_receipts(
+                    root,
+                    transaction,
+                    [*receipts, receipt],
+                    candidate_receipt=receipt,
+                )
             path = run_dir / "receipts" / f"{sequence:03d}-{stage}.json"
             _write_json_once(root, path, receipt)
             return receipt
@@ -2319,6 +2413,8 @@ def accept_agent_request(
     expected_marker = AGENT_PROMPT_MARKER_PREFIX + _canonical_bytes(
         _agent_prompt_marker_payload(launch, launch_signature)
     ).decode("utf-8")
+    expected_task_name = _task_name_from_prompt_marker(expected_marker)
+    expected_agent_path = f"/root/{expected_task_name}"
 
     rollout = request.get("rollout")
     if not isinstance(rollout, Mapping) or set(rollout) != {
@@ -2347,6 +2443,7 @@ def accept_agent_request(
         expected_model=str(expected_step.get("requested_model") or ""),
         expected_effort=str(expected_step.get("requested_reasoning_effort") or ""),
         expected_marker=expected_marker,
+        expected_task_name=expected_task_name,
     )
     if evidence.parent_thread_id != transaction.get("parent_thread_id"):
         raise WriteTransactionError("child Agent parent does not match the current write task")
@@ -2458,6 +2555,8 @@ def accept_agent_request(
                 "thread_id": evidence.thread_id,
                 "parent_thread_id": evidence.parent_thread_id,
                 "prompt_marker_sha256": _sha256_bytes(expected_marker.encode("utf-8")),
+                "agent_task_name": expected_task_name,
+                "agent_path": expected_agent_path,
             },
         },
     )
@@ -2651,13 +2750,13 @@ def _verified_backup_details(
     return str(receipt["status"]), {**receipt, "receipt_artifact": signature}
 
 
-def _verified_commit_input_hashes(
+def _verified_commit_input_specs(
     root: Path,
     run_id: str,
     transaction: Mapping[str, Any],
     *,
     progress: Mapping[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     if progress is None:
         receipts = _validated_receipts(_run_dir(root, run_id), transaction=transaction)
         progress = _derive_progress(transaction, receipts)
@@ -2670,7 +2769,7 @@ def _verified_commit_input_hashes(
     bound_data = data_details.get("bound_artifacts") if isinstance(data_details, Mapping) else None
     if not isinstance(bound_data, list) or len(bound_data) != 3:
         raise WriteTransactionError("run-bound data artifacts are incomplete")
-    hashes = {"review_results.json": str(bound_review.get("sha256") or "")}
+    specs = {"review_results.json": dict(bound_review)}
     expected_names = {
         "fulfillment_result.json",
         "disambiguation_result.json",
@@ -2686,10 +2785,341 @@ def _verified_commit_input_hashes(
         if name not in expected_names or _file_signature(bound_path).get("sha256") != digest:
             raise WriteTransactionError("run-bound data artifact changed")
         seen.add(name)
-        hashes[name] = digest
+        specs[name] = dict(signature)
     if seen != expected_names:
         raise WriteTransactionError("run-bound data artifact set is invalid")
-    return hashes
+    return specs
+
+
+def _verified_commit_input_hashes(
+    root: Path,
+    run_id: str,
+    transaction: Mapping[str, Any],
+    *,
+    progress: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    return {
+        name: str(signature.get("sha256") or "")
+        for name, signature in _verified_commit_input_specs(
+            root,
+            run_id,
+            transaction,
+            progress=progress,
+        ).items()
+    }
+
+
+def _expected_commit_payload(
+    root: Path,
+    transaction: Mapping[str, Any],
+    progress: Mapping[str, Any],
+    *,
+    projection_status: Mapping[str, str],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Rebuild the accepted commit from the four immutable run-bound inputs."""
+
+    from .chapter_commit_schema import (
+        DisambiguationResult,
+        ExtractionResult,
+        FulfillmentResult,
+        ReviewResult,
+        normalize_accepted_events,
+    )
+
+    run_id = str(transaction["run_id"])
+    chapter = int(transaction["chapter"])
+    promotion = _receipt_details(progress, "promotion")
+    contracts = _replay_recovery_decision(root, transaction, promotion)
+    if _contract_signatures(root, chapter) != contracts:
+        raise WriteTransactionError("commit contracts changed after their bound snapshot")
+    specs = _verified_commit_input_specs(
+        root,
+        run_id,
+        transaction,
+        progress=progress,
+    )
+    payloads: dict[str, dict[str, Any]] = {}
+    for name, signature in specs.items():
+        path = Path(str(signature.get("path") or ""))
+        raw = _stable_read_bytes(
+            path,
+            trusted_root=_staging_dir(root, run_id),
+            max_bytes=MAX_CONTROL_BYTES,
+        )
+        if _sha256_bytes(raw) != signature.get("sha256"):
+            raise WriteTransactionError(f"run-bound commit input changed: {name}")
+        payloads[name] = _json_object_from_bytes(raw, path)
+
+    try:
+        review = ReviewResult.model_validate(payloads["review_results.json"]).model_dump()
+        fulfillment = FulfillmentResult.model_validate(
+            payloads["fulfillment_result.json"]
+        ).model_dump()
+        disambiguation = DisambiguationResult.model_validate(
+            payloads["disambiguation_result.json"]
+        ).model_dump()
+        extraction = ExtractionResult.model_validate(
+            payloads["extraction_result.json"]
+        ).model_dump()
+        extraction["accepted_events"] = normalize_accepted_events(
+            chapter,
+            extraction.get("accepted_events"),
+        )
+    except Exception as exc:
+        raise WriteTransactionError(f"run-bound commit inputs are invalid: {exc}") from exc
+    if (
+        int(review.get("blocking_count") or 0) != 0
+        or fulfillment.get("missed_nodes")
+        or disambiguation.get("pending")
+    ):
+        raise WriteTransactionError("run-bound inputs cannot produce an accepted commit")
+
+    try:
+        contract_refs = {
+            "master": Path(str(contracts["master"]["path"])).name,
+            "volume": Path(str(contracts["volume"]["path"])).name,
+            "chapter": Path(str(contracts["chapter"]["path"])).name,
+            "review": Path(str(contracts["review"]["path"])).name,
+        }
+    except (KeyError, TypeError) as exc:
+        raise WriteTransactionError("transaction contract references are invalid") from exc
+    expected = {
+        "meta": {
+            "schema_version": "story-system/v1",
+            "chapter": chapter,
+            "status": "accepted",
+        },
+        "contract_refs": contract_refs,
+        "provenance": {
+            "write_fact_role": "chapter_commit",
+            "projection_role": "derived_read_models",
+            "legacy_state_role": "projection_only",
+        },
+        "outline_snapshot": {
+            "planned_nodes": fulfillment["planned_nodes"],
+            "covered_nodes": fulfillment["covered_nodes"],
+            "missed_nodes": fulfillment["missed_nodes"],
+            "extra_nodes": fulfillment["extra_nodes"],
+        },
+        "review_result": review,
+        "fulfillment_result": fulfillment,
+        "disambiguation_result": disambiguation,
+        "extraction_result": extraction,
+        "projection_status": dict(projection_status),
+    }
+    return expected, {
+        name: str(signature.get("sha256") or "")
+        for name, signature in specs.items()
+    }
+
+
+_COMMIT_DETAIL_FIELDS = {
+    "commit_status",
+    "commit",
+    "commit_hash",
+    "promotion_body",
+    "commit_input_hashes",
+    "projection_status",
+    "commit_projection_status",
+    "projection_run_id",
+    "projection_commit_path",
+    "projection_commit_hash",
+}
+
+
+def _projection_writer_bindings_are_compatible(
+    writers: Mapping[str, Any],
+    commit_statuses: Mapping[str, str],
+) -> bool:
+    if set(writers) != PROJECTION_WRITERS or set(commit_statuses) != PROJECTION_WRITERS:
+        return False
+    for name in PROJECTION_WRITERS:
+        result = writers.get(name)
+        if not isinstance(result, Mapping):
+            return False
+        writer = str(result.get("status") or "")
+        committed = str(commit_statuses.get(name) or "")
+        if writer in {"done", "skipped"}:
+            if committed != writer:
+                return False
+        elif writer == "failed":
+            error = result.get("error")
+            if not isinstance(error, str) or not error or committed != f"failed:{error}":
+                return False
+        elif writer.startswith("failed:"):
+            if committed != writer:
+                return False
+        else:
+            return False
+    return True
+
+
+def _projection_run_status_from_writers(writers: Mapping[str, Any]) -> str:
+    statuses = {
+        str(result.get("status") or "")
+        for result in writers.values()
+        if isinstance(result, Mapping)
+    }
+    if any(status == "failed" or status.startswith("failed:") for status in statuses):
+        return "failed"
+    if statuses and statuses <= {"skipped"}:
+        return "skipped"
+    return "done"
+
+
+def _verified_materialized_commit_truth(
+    root: Path,
+    transaction: Mapping[str, Any],
+    progress: Mapping[str, Any],
+    *,
+    receipt_details: Mapping[str, Any] | None = None,
+    allow_projection_advance: bool = False,
+) -> dict[str, Any] | None:
+    """Bind a materialized commit to this run; mere file existence is never enough."""
+
+    chapter = int(transaction["chapter"])
+    accepted_snapshot = _accepted_commit_stable_snapshot(root, chapter)
+    if accepted_snapshot is None:
+        return None
+    accepted = accepted_snapshot["payload"]
+    promotion = _receipt_details(progress, "promotion")
+    promotion_body = promotion.get("target")
+    if not _signature_is_current(promotion_body, trusted_root=root / "正文"):
+        raise WriteTransactionError("accepted commit does not bind the current promoted body")
+    precommit = _receipt_details(progress, "precommit")
+    commit_inputs = _verified_commit_input_hashes(
+        root,
+        str(transaction["run_id"]),
+        transaction,
+        progress=progress,
+    )
+    if precommit.get("commit_input_hashes") != commit_inputs:
+        raise WriteTransactionError("accepted commit input hashes do not match precommit")
+
+    commit_path = (
+        root / ".story-system" / "commits" / f"chapter_{chapter:03d}.commit.json"
+    ).resolve()
+    commit_signature = accepted_snapshot["signature"]
+    current_hash = accepted_snapshot["commit_hash"]
+    latest = latest_projection_run(root, chapter=chapter)
+    statuses = projection_status_from_run(latest)
+    committed_statuses = (
+        {
+            str(name): str(status)
+            for name, status in latest.get("projection_status", {}).items()
+        }
+        if isinstance(latest, Mapping) and isinstance(latest.get("projection_status"), Mapping)
+        else {}
+    )
+    required_projection_fields = {
+        "schema_version",
+        "run_id",
+        "created_at",
+        "chapter",
+        "commit_path",
+        "commit_hash",
+        "commit_status",
+        "status",
+        "writers",
+        "projection_status",
+    }
+    if (
+        not isinstance(latest, Mapping)
+        or not required_projection_fields.issubset(latest)
+        or latest.get("schema_version") != "webnovel-projection-log/v1"
+        or not str(latest.get("run_id") or "").strip()
+        or latest.get("chapter") != chapter
+        or not isinstance(latest.get("writers"), Mapping)
+        or not _projection_writer_bindings_are_compatible(
+            latest["writers"],
+            committed_statuses,
+        )
+        or latest.get("status") != _projection_run_status_from_writers(latest["writers"])
+        or Path(str(latest.get("commit_path") or "")).resolve() != commit_path
+        or latest.get("commit_hash") != current_hash
+        or latest.get("commit_status") != "accepted"
+    ):
+        raise WriteTransactionError(
+            "accepted commit lacks an exact latest projection binding"
+        )
+    expected, expected_hashes = _expected_commit_payload(
+        root,
+        transaction,
+        progress,
+        projection_status=committed_statuses,
+    )
+    if expected_hashes != commit_inputs or accepted != expected:
+        raise WriteTransactionError("accepted commit payload is not the exact run-bound commit")
+    if not _signature_is_current(
+        commit_signature,
+        trusted_root=root / ".story-system" / "commits",
+    ):
+        raise WriteTransactionError("accepted commit changed during truth verification")
+
+    current = {
+        "commit_status": "accepted",
+        "commit": commit_signature,
+        "commit_hash": current_hash,
+        "promotion_body": dict(promotion_body),
+        "commit_input_hashes": commit_inputs,
+        "projection_status": statuses,
+        "commit_projection_status": committed_statuses,
+        "projection_run_id": latest.get("run_id"),
+        "projection_commit_path": str(commit_path),
+        "projection_commit_hash": latest.get("commit_hash"),
+    }
+    if receipt_details is None:
+        return current
+    if set(receipt_details) != _COMMIT_DETAIL_FIELDS:
+        raise WriteTransactionError("commit receipt details have an invalid exact schema")
+    if (
+        receipt_details.get("commit_status") != "accepted"
+        or receipt_details.get("promotion_body") != current["promotion_body"]
+        or receipt_details.get("commit_input_hashes") != current["commit_input_hashes"]
+        or Path(str(receipt_details.get("projection_commit_path") or "")).resolve()
+        != commit_path
+    ):
+        raise WriteTransactionError("commit receipt no longer binds this exact write run")
+
+    historical = [
+        run
+        for run in read_projection_runs(root, chapter=chapter)
+        if run.get("run_id") == receipt_details.get("projection_run_id")
+    ]
+    historical_status = projection_status_from_run(historical[0]) if len(historical) == 1 else {}
+    historical_commit_status = (
+        {
+            str(name): str(status)
+            for name, status in historical[0].get("projection_status", {}).items()
+        }
+        if len(historical) == 1 and isinstance(historical[0].get("projection_status"), Mapping)
+        else {}
+    )
+    if (
+        len(historical) != 1
+        or not required_projection_fields.issubset(historical[0])
+        or historical[0].get("schema_version") != "webnovel-projection-log/v1"
+        or historical[0].get("chapter") != chapter
+        or historical[0].get("commit_hash") != receipt_details.get("projection_commit_hash")
+        or Path(str(historical[0].get("commit_path") or "")).resolve() != commit_path
+        or historical[0].get("commit_status") != "accepted"
+        or historical_status != receipt_details.get("projection_status")
+        or historical_commit_status != receipt_details.get("commit_projection_status")
+        or not isinstance(historical[0].get("writers"), Mapping)
+        or not _projection_writer_bindings_are_compatible(
+            historical[0]["writers"],
+            historical_commit_status,
+        )
+        or historical[0].get("status")
+        != _projection_run_status_from_writers(historical[0]["writers"])
+        or receipt_details.get("commit_hash") != receipt_details.get("projection_commit_hash")
+    ):
+        raise WriteTransactionError("commit receipt historical projection binding changed")
+    if not allow_projection_advance:
+        for field in _COMMIT_DETAIL_FIELDS:
+            if receipt_details.get(field) != current.get(field):
+                raise WriteTransactionError("commit receipt current truth changed before projections")
+    return current
 
 
 def _sync_commit_review_truth(
@@ -3177,24 +3607,35 @@ def _replay_agent_receipt(
     marker = AGENT_PROMPT_MARKER_PREFIX + _canonical_bytes(
         _agent_prompt_marker_payload(launch, launch_signature)
     ).decode("utf-8")
+    expected_task_name = _task_name_from_prompt_marker(marker)
+    expected_agent_path = f"/root/{expected_task_name}"
     rollout_request = request.get("rollout")
     rollout_binding = bindings.get("rollout")
+    required_rollout_fields = {
+        "path",
+        "sha256",
+        "bytes",
+        "thread_id",
+        "parent_thread_id",
+        "prompt_marker_sha256",
+        "agent_task_name",
+        "agent_path",
+    }
+    if not isinstance(rollout_request, Mapping) or not isinstance(rollout_binding, Mapping):
+        raise WriteTransactionError(f"{stage} rollout binding is invalid")
+    if set(rollout_binding) != required_rollout_fields:
+        raise WriteTransactionError(f"{stage} rollout binding is invalid")
     if (
-        not isinstance(rollout_request, Mapping)
-        or not isinstance(rollout_binding, Mapping)
-        or set(rollout_binding) != {
-            "path",
-            "sha256",
-            "bytes",
-            "thread_id",
-            "parent_thread_id",
-            "prompt_marker_sha256",
-        }
-        or rollout_binding.get("thread_id") != rollout_request.get("thread_id")
+        rollout_binding.get("thread_id") != rollout_request.get("thread_id")
         or rollout_binding.get("parent_thread_id") != rollout_request.get("parent_thread_id")
         or rollout_binding.get("prompt_marker_sha256") != _sha256_bytes(marker.encode("utf-8"))
     ):
         raise WriteTransactionError(f"{stage} rollout binding is invalid")
+    if (
+        rollout_binding.get("agent_task_name") != expected_task_name
+        or rollout_binding.get("agent_path") != expected_agent_path
+    ):
+        raise WriteTransactionError(f"{stage} rollout task binding is invalid")
     rollout_path = _absolute_lexical(str(rollout_binding.get("path") or ""))
     if rollout_path != _absolute_lexical(str(rollout_request.get("path") or "")):
         raise WriteTransactionError(f"{stage} rollout request path changed")
@@ -3216,6 +3657,7 @@ def _replay_agent_receipt(
         expected_model=str(expected_step.get("requested_model") or ""),
         expected_effort=str(expected_step.get("requested_reasoning_effort") or ""),
         expected_marker=marker,
+        expected_task_name=expected_task_name,
     )
     if evidence.parent_thread_id != transaction.get("parent_thread_id"):
         raise WriteTransactionError(f"{stage} child Agent no longer binds the current parent")
@@ -3446,10 +3888,15 @@ def _replay_recovery_decision(
     root: Path,
     transaction: Mapping[str, Any],
     details: Mapping[str, Any],
-) -> None:
+) -> Mapping[str, Any]:
     recovery = details.get("recovery_decision")
     if recovery is None:
-        return
+        expected = transaction.get("contract_signatures_before")
+        if not isinstance(expected, Mapping):
+            raise WriteTransactionError("transaction contract signatures are missing")
+        if _contract_signatures(root, int(transaction["chapter"])) != expected:
+            raise WriteTransactionError("contracts changed after promotion")
+        return expected
     if not isinstance(recovery, Mapping) or set(recovery) != {
         "selected",
         "scope_sha256",
@@ -3545,16 +3992,21 @@ def _replay_recovery_decision(
         or scope["final_artifact"].get("sha256") != source.get("sha256")
         or scope.get("target", {}).get("path") != target.get("path")
         or not isinstance(scope.get("contracts"), Mapping)
+        or _contract_signatures(root, int(transaction["chapter"]))
+        != scope.get("contracts")
         or not isinstance(accepted, Mapping)
         or accepted.get("accepted") is not False
     ):
         raise WriteTransactionError("promotion recovery decision scope is invalid")
+    return scope["contracts"]
 
 
 def _replay_completed_receipts(
     root: Path,
     transaction: Mapping[str, Any],
     receipts: Sequence[Mapping[str, Any]],
+    *,
+    candidate_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Re-derive every production stage from its bound evidence and current truth."""
 
@@ -3570,6 +4022,27 @@ def _replay_completed_receipts(
         or _sha256_bytes(_canonical_bytes(readiness)) != transaction.get("route_readiness_sha256")
     ):
         raise WriteTransactionError("managed Agent route changed during receipt replay")
+    materialized_commit: dict[str, Any] | None = None
+    completed_lineage = progress.get("completed", {})
+    has_commit_lineage = all(
+        isinstance(completed_lineage, Mapping) and completed_lineage.get(stage)
+        for stage in ("promotion", "data_agent", "precommit")
+    )
+    if has_commit_lineage:
+        materialized_commit = _verified_materialized_commit_truth(
+            root,
+            transaction,
+            progress,
+        )
+    # An accepted file that predates this run, or appears concurrently before
+    # this run has commit lineage, is not authorization for any later stage.
+    # It can, however, legitimately change the phase reported by the prewrite
+    # gate; replay the receipt's invariant identity while leaving every state,
+    # body, contract, promotion, and commit binding strict.
+    unbound_accepted_commit = (
+        not has_commit_lineage
+        and _accepted_commit_stable_snapshot(root, int(transaction["chapter"])) is not None
+    )
     completed_so_far: list[Mapping[str, Any]] = []
     for receipt in receipts:
         stage = str(receipt.get("stage") or "")
@@ -3588,10 +4061,13 @@ def _replay_completed_receipts(
             _replay_agent_receipt(root, transaction, receipt, progress_before)
         elif stage == "preflight":
             _require_detail_fields(stage, details, {"gate_ok", "state"})
-            if not progress.get("completed", {}).get("projections"):
-                current_state = _file_signature(root / ".webnovel" / "state.json", trusted_root=root)
-                if not _signature_binding_matches(details.get("state"), current_state):
-                    raise WriteTransactionError("preflight state changed before projections")
+            current_state = _file_signature(root / ".webnovel" / "state.json", trusted_root=root)
+            if not _signature_binding_matches(details.get("state"), current_state):
+                if (
+                    materialized_commit is None
+                    or materialized_commit.get("projection_status", {}).get("state") != "done"
+                ):
+                    raise WriteTransactionError("preflight state changed without an exact commit projection")
         elif stage in {"prewrite", "precommit", "postcommit"}:
             _require_detail_fields(
                 stage,
@@ -3606,17 +4082,32 @@ def _replay_completed_receipts(
             )
             if not _SHA256_RE.fullmatch(str(details.get("gate_report_sha256") or "")):
                 raise WriteTransactionError(f"{stage} gate receipt hash is invalid")
-            later_truth_exists = bool(
-                progress.get("completed", {}).get("commit")
-                if stage in {"prewrite", "precommit"}
-                else progress.get("completed", {}).get("backup")
-            )
-            if not later_truth_exists:
+            exact_report_required = True
+            relaxed_prewrite = False
+            if stage in {"prewrite", "precommit"} and materialized_commit is not None:
+                exact_report_required = False
+            elif stage == "prewrite" and unbound_accepted_commit:
+                exact_report_required = False
+            elif stage == "prewrite" and progress.get("completed", {}).get("context_agent"):
+                exact_report_required = False
+                relaxed_prewrite = True
+            elif stage == "postcommit" and progress.get("completed", {}).get("backup"):
+                exact_report_required = False
+            if exact_report_required or relaxed_prewrite:
                 report = run_write_gate(root, chapter=int(transaction["chapter"]), stage=stage)
                 if (
                     report.get("ok") is not True
                     or details.get("gate_schema") != report.get("schema_version")
-                    or details.get("gate_phase") != report.get("phase")
+                ):
+                    raise WriteTransactionError(f"{stage} gate truth changed")
+                if relaxed_prewrite and (
+                    report.get("stage") != stage
+                    or Path(str(report.get("project_root") or "")).resolve() != root
+                    or report.get("chapter") != int(transaction["chapter"])
+                ):
+                    raise WriteTransactionError("prewrite gate identity changed")
+                if exact_report_required and (
+                    details.get("gate_phase") != report.get("phase")
                     or details.get("gate_report_sha256")
                     != _sha256_bytes(_canonical_bytes(report))
                 ):
@@ -3652,7 +4143,16 @@ def _replay_completed_receipts(
                 raise WriteTransactionError("promotion source/target hashes differ")
             _replay_recovery_decision(root, transaction, details)
         elif stage == "commit":
-            _require_detail_fields(stage, details, {"commit_status", "commit"})
+            _verified_materialized_commit_truth(
+                root,
+                transaction,
+                progress_before,
+                receipt_details=details,
+                # Only an already-persisted immutable commit receipt may
+                # survive a later projection retry.  A candidate receipt must
+                # bind the exact current commit/run at its append point.
+                allow_projection_advance=receipt is not candidate_receipt,
+            )
         elif stage == "projections":
             _require_detail_fields(
                 stage,
@@ -3675,6 +4175,20 @@ def _replay_completed_receipts(
                 raise WriteTransactionError("complete receipt truth audit binding is invalid")
         completed_so_far.append(receipt)
     late_progress = _derive_progress(transaction, receipts)
+    promotion_index = list(transaction.get("stages") or []).index("promotion")
+    if (
+        late_progress.get("completed", {}).get("context_agent")
+        and not late_progress.get("completed", {}).get("promotion")
+        and int(late_progress.get("next_index") or 0) < promotion_index
+    ):
+        if _contract_signatures(root, int(transaction["chapter"])) != transaction.get(
+            "contract_signatures_before"
+        ):
+            raise WriteTransactionError("write contracts changed before promotion recovery")
+        body_before = transaction.get("body_before")
+        current_body = _file_signature(find_chapter_file(root, int(transaction["chapter"])))
+        if not _signature_binding_matches(body_before, current_body):
+            raise WriteTransactionError("chapter body changed before promotion recovery")
     if any(stage in late_progress.get("completed", {}) for stage in ("promotion", "commit", "projections", "postcommit", "backup", "complete")):
         audit = _audit_current_truth(root, transaction, late_progress)
         if audit.get("ok") is not True:
@@ -3825,17 +4339,14 @@ def record_verified_stage_request(
             "resolution_status": "not_required" if not blocking_issue_hashes else "decision_pending",
         }
     elif stage == "commit":
-        commit = _accepted_commit(root, chapter)
-        if commit is None:
-            raise WriteTransactionError("exact chapter commit is missing or not accepted")
-        commit_path = root / ".story-system" / "commits" / f"chapter_{chapter:03d}.commit.json"
-        meta = commit.get("meta") if isinstance(commit.get("meta"), Mapping) else {}
-        if meta.get("chapter") != chapter:
-            raise WriteTransactionError("accepted commit chapter identity mismatch")
-        details = {
-            "commit_status": "accepted",
-            "commit": _file_signature(commit_path),
-        }
+        _, commit_progress = _replayed_progress(root, transaction)
+        details = _verified_materialized_commit_truth(
+            root,
+            transaction,
+            commit_progress,
+        )
+        if details is None:
+            raise WriteTransactionError("exact run-bound chapter commit is missing or not accepted")
     elif stage == "projections":
         commit = _accepted_commit(root, chapter)
         run = latest_projection_run(root, chapter=chapter)
@@ -4689,13 +5200,29 @@ def _audit_current_truth(
     current_commit: dict[str, Any] | None = None
     if commit_receipt:
         details = commit_receipt.get("details") if isinstance(commit_receipt, Mapping) else None
-        signature = details.get("commit") if isinstance(details, Mapping) else None
         current_commit = _accepted_commit(root, chapter)
-        if current_commit is None or not _signature_is_current(
-            signature,
-            trusted_root=root / ".story-system" / "commits",
+        if (
+            not transaction.get("test_only")
+            and isinstance(details, Mapping)
+            and set(details) == _COMMIT_DETAIL_FIELDS
         ):
-            problems.append("accepted_commit_stale")
+            try:
+                _verified_materialized_commit_truth(
+                    root,
+                    transaction,
+                    progress,
+                    receipt_details=details,
+                    allow_projection_advance=True,
+                )
+            except WriteTransactionError as exc:
+                problems.append(f"accepted_commit_stale:{exc}")
+        else:
+            signature = details.get("commit") if isinstance(details, Mapping) else None
+            if current_commit is None or not _signature_is_current(
+                signature,
+                trusted_root=root / ".story-system" / "commits",
+            ):
+                problems.append("accepted_commit_stale")
 
     if not transaction.get("test_only"):
         if completed.get("promotion") or progress.get("next_stage") is None:

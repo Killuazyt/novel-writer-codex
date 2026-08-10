@@ -36,6 +36,19 @@ def test_project_status_json_shape(tmp_path):
     assert report["next_action"] == "run $webnovel-write 1"
 
 
+def test_project_status_recommends_first_unwritten_chapter_after_full_volume_plan(tmp_path):
+    _make_init_ready(tmp_path)
+    for chapter in range(1, 11):
+        _make_contracts(tmp_path, chapter=chapter)
+
+    report = build_project_status(tmp_path)
+
+    assert report["phase"] == "chapter_contract_ready"
+    assert report["latest_accepted_chapter"] == 0
+    assert report["target_chapter"] == 1
+    assert report["next_action"] == "run $webnovel-write 1"
+
+
 def test_project_status_summary_is_short_and_machine_source_is_json(tmp_path):
     _make_init_ready(tmp_path)
     report = build_project_status(tmp_path)
