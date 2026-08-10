@@ -17,7 +17,7 @@
 - 本机能够发现 9 个 `$webnovel-*` Skill，并由 `$webnovel-setup` 安装、校验 5 个项目 Agent。
 - 能在不手拼 Python/shell 命令的正常对话中完成：初始化/打开小说、规划、查询、学习、审查、写章和 Dashboard。
 - Plan authored-conflict、Review blocking、Write blocking `targeted_fix`、作者正文/合同冲突均使用当前父任务的可信有限选择 receipt；未回答、跨任务、过期或篡改 receipt 必须 fail-closed。
-- 至少完成一次真实本机 Init → Plan → Review/Write 链；写章的 context、writer、reviewer、data 必须实际为 `gpt-5.6-luna` / `medium`，父任务不得代写或静默 fallback。
+- 至少完成一次真实本机 Init → Plan → Review/Write 链；当前写章的 context、writer、reviewer、data 必须实际为 `gpt-5.6-luna` / `high`，父任务不得代写或静默 fallback。
 - 章节提交、五项 projection、postcommit 和非 Git backup skip 能从真源回读；现场 projection 失败只补 projection，不重跑正文或 Agent。
 - Windows 中文、空格、括号、`&` 路径可用；旧小说数据合同不迁移，新流程不写 `.claude`。
 - 保留隔离全量测试、UTF-8/BOM、事实数据保护和 `git diff --check` 等本机安全 gate。
@@ -47,7 +47,7 @@
 - Agent 缺失或版本不匹配时阻断相关 Skill，不静默降级为主 Agent 模拟。
 - 主对话只负责理解命令、规划、编排、展示状态和向用户提问；不得自行代写正文、润色正文或伪造审查结论。
 - `$webnovel-plan` 始终使用任务创建时用户选定的主对话模型，不为规划固定另一个模型。
-- `$webnovel-write` 调用的 context、writer、reviewer、data Agent，以及 `$webnovel-review` 调用的 reviewer，固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "medium"`；父会话模型或 reasoning effort 不得覆盖它们。
+- `$webnovel-write` 调用的 context、writer、reviewer、data Agent，以及 `$webnovel-review` 调用的 reviewer，固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "high"`；父会话模型或 reasoning effort 不得覆盖它们。
 - `webnovel_deconstruction_agent` 服务于初始化与创意分析，继承主对话模型；它不参与正文起草、润色或章节审查。
 - 指定 Agent、模型或 reasoning effort 不可用时必须阻断并报告 `model_unavailable` 或 `agent_unavailable`，禁止回退到父模型或其他模型后继续产出。
 - 子 Agent 隔离的优化目标是减少主对话上下文污染和昂贵主模型 token；由于每个子 Agent 都会产生独立调用，不承诺全链路 token 总量一定低于单 Agent。
@@ -200,7 +200,7 @@ python -X utf8 scripts/webnovel.py codex-setup
   - `webnovel_deconstruction_agent`
 
 - Agent 角色合同以 `references/agents/*.md` 为唯一语义真源，由生成器产生 `.codex/agents/*.toml`。
-- context、writer、reviewer、data 的 TOML 固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "medium"`；deconstruction 不写这两个字段并继承父会话。
+- context、writer、reviewer、data 的 TOML 固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "high"`；deconstruction 不写这两个字段并继承父会话。
 - context、reviewer、deconstruction 使用 `read-only`；writer、data 使用 `workspace-write`。
 - writer 只能在 `.webnovel/tmp/write-runs/<run_id>/` 写入本轮 `draft.md`、`polished.md` 和最小 manifest；不得直接写最终正文、Story System 或其他 canon。data 只允许生成三份既定 `.webnovel/tmp` artifact。
 - 管理记录保存到 `.codex/novel-writer-codex/managed-agents.json`。
@@ -249,10 +249,10 @@ Agent 使用规则：
 | 工作 | 执行者 | 模型来源 | 主对话可见内容 |
 |---|---|---|---|
 | 理解命令、规划、用户裁决、流程编排 | 主 Agent | 当前对话模型 | 需求、计划、状态和精简汇总 |
-| 写前上下文压缩 | `webnovel_context_agent` | 固定 `gpt-5.6-luna` / `medium` | 仅任务书摘要与 artifact 引用 |
-| 正文起草、定点修复、润色 | `webnovel_writer` | 固定 `gpt-5.6-luna` / `medium` | 路径、hash、字数和状态，不回传整章正文 |
-| 单章/范围章节审查 | `webnovel_reviewer` | 固定 `gpt-5.6-luna` / `medium` | 结构化问题摘要和 artifact 引用 |
-| 写后事实提取 | `webnovel_data_agent` | 固定 `gpt-5.6-luna` / `medium` | 三份 artifact 的路径、hash 和校验状态 |
+| 写前上下文压缩 | `webnovel_context_agent` | 固定 `gpt-5.6-luna` / `high` | 仅任务书摘要与 artifact 引用 |
+| 正文起草、定点修复、润色 | `webnovel_writer` | 固定 `gpt-5.6-luna` / `high` | 路径、hash、字数和状态，不回传整章正文 |
+| 单章/范围章节审查 | `webnovel_reviewer` | 固定 `gpt-5.6-luna` / `high` | 结构化问题摘要和 artifact 引用 |
+| 写后事实提取 | `webnovel_data_agent` | 固定 `gpt-5.6-luna` / `high` | 三份 artifact 的路径、hash 和校验状态 |
 | 初始化参考作品拆解 | `webnovel_deconstruction_agent` | 当前对话模型 | 精简候选与风险摘要 |
 
 每次 Agent 调用必须在 run ledger 中记录 `agent_name`、请求的 `model`、实际报告的 `model`、reasoning effort、输入 artifact/hash、输出 artifact/hash 和状态。实际模型与合同不一致时，本次结果作废并阻断；不得把非 Luna 产物写入正文、审查报告或事实提交链。
@@ -404,7 +404,7 @@ Agent 使用规则：
 - [x] 为每个 Skill 增加 `agents/openai.yaml`，default prompt 显式使用 `$skill-name`。
 - [x] 建立共享 Codex runtime 调用说明，去除 `export`、`$PWD`、`$()`、`cat/test/find/seq/printf`、`/dev/null` 及 shell 循环。
 - [x] 移植上游四个 Agent 合同，新增独立 writer 合同，并生成五个项目 TOML。
-- [x] 在 context、writer、reviewer、data TOML 中固定 `gpt-5.6-luna` / `medium`，保留 deconstruction 继承当前对话模型；生成器和 managed hash 必须覆盖模型字段。
+- [x] 在 context、writer、reviewer、data TOML 中固定 `gpt-5.6-luna` / `high`，保留 deconstruction 继承当前对话模型；生成器和 managed hash 必须覆盖模型字段。
 - [x] 建立统一有限选项交互协议，并把 Claude `AskUserQuestion` 语义映射到 Codex 当前客户端可用的结构化选择或编号对话 fallback。
 - [x] 加入 TOML/合同哈希漂移校验和 Setup 幂等测试。
 - [x] 加入模型可用性、实际模型回读和禁止父模型 fallback 的真实新任务 smoke；只解析 TOML 不算通过。
@@ -497,7 +497,7 @@ Learn 验收：
 Review 验收：
 
 - reviewer 严格输出 setting、timeline、continuity、character、logic 五维结果。
-- reviewer 的 run ledger 实际模型必须为 `gpt-5.6-luna` / `medium`；不匹配时不生成报告或落库。
+- reviewer 的 run ledger 实际模型必须为 `gpt-5.6-luna` / `high`；不匹配时不生成报告或落库。
 - 每个 issue 有 evidence、fix hint 和 blocking 标记。
 - metrics JSON、报告和数据库一致。
 - 不复用上一章 tmp artifact。
@@ -531,7 +531,7 @@ M5 尚未关闭的现场/发布门：
 - [x] 在真实安装后的独立新 Codex 顶层任务中发现全部 M5 Skills；证据来自该任务实际加载的安装缓存，不以当前任务文件、validator 或子 Agent 自报替代。
 - [x] Init 在真实父 rollout 中完成一次 `Apply`；`git-mode off`、目标零写入预览、父任务绑定授权和临时文件删除均由真源回读。
 - [ ] 可选参考路径另需真实 deconstruction 子 Agent 与 `Adopt`/`Discard`/`Cancel` 用户回答证据。
-- [ ] Review 以真实 `gpt-5.6-luna / medium` reviewer 完成单章，并验证 blocking 三选一的父任务用户回答 receipt。
+- [ ] Review 以真实 `gpt-5.6-luna / high` reviewer 完成单章，并验证 blocking 三选一的父任务用户回答 receipt。
 - [x] Plan 由当前真实父模型完成 marker/validate/greenfield apply、10 章合同提升与首章 prewrite。
 - [ ] 对已实现的 Plan authored-conflict receipt 做覆盖现场 smoke。
 
@@ -577,7 +577,7 @@ preflight
 验收：
 
 - reviewer 每章最多一轮；blocking 未处理不得提交。
-- context、writer、reviewer、data 的实际模型都必须为 `gpt-5.6-luna` / `medium`；父会话使用任何可用模型时都不得改变该路由。
+- context、writer、reviewer、data 的实际模型都必须为 `gpt-5.6-luna` / `high`；父会话使用任何可用模型时都不得改变该路由。
 - draft、定点修复和 polish 全部由 writer Agent 完成；主 Agent 只编排和提升已验证 staging artifact，禁止自行补写或改写正文。
 - 主对话只接收任务摘要、artifact 路径/hash、字数、问题摘要和状态；完整任务书、正文与长审查明细留在子 Agent/artifact，避免污染规划上下文。
 - 任一 Luna Agent 不可用、超时、实际模型不匹配或输出越界时立即阻断，不回退父模型；失败 staging artifact 不得提升为最终正文。
@@ -602,7 +602,7 @@ M6 尚未关闭的实现与现场门：
 
 - [x] 为 blocking review 实现可信父任务 `targeted_fix` 选择、逐 issue resolution receipt，并只提升经过验证的 writer staging artifact。
 - [x] 为作者已修改正文/合同较新等冲突实现可信 `replace_with_verified`/保留/取消 receipt；裸 CLI 字符串继续不构成授权。
-- [ ] 在真实任务中完成 context、writer draft、reviewer、writer polish、data 四角色 `gpt-5.6-luna / medium` 的 default/fast/minimal 链，且父任务不代写。
+- [ ] 在真实任务中完成 context、writer draft、reviewer、writer polish、data 四角色 `gpt-5.6-luna / high` 的 default/fast/minimal 链，且父任务不代写。
 - [x] 现场注入一次 projection 失败，证明只 retry/replay projection，不重跑正文、reviewer 或 data Agent。
 - [ ] 在用户单独授权后，以临时普通 Git 小说项目完成 exact allowlist backup/tag live smoke；本轮不对当前仓库做任何 Git 写。
 - [ ] 真实范围审查逐章运行，并验证 blocker 后 `stop`/`continue` 父任务用户选择 receipt。
@@ -665,7 +665,7 @@ Marketplace 条目固定为：
 - 9 个 Skill 全部可发现，显式 `$skill` 和自然语言触发均通过。
 - 5 个项目 Agent 均通过 Setup、更新、冲突和新任务发现测试。
 - 对话式有限选项在 Setup、Init、Plan、Review、Write 和恢复路径均通过；系统权限审批仍由 Codex 原生 permission/approval 处理。
-- 在不同父会话模型下，规划使用父会话模型，写章与审查的实际 Agent 模型始终为 `gpt-5.6-luna` / `medium`，且无静默 fallback。
+- 在不同父会话模型下，规划使用父会话模型，写章与审查的实际 Agent 模型始终为 `gpt-5.6-luna` / `high`，且无静默 fallback。
 - 旧小说项目无需数据迁移即可打开和继续写作。
 - 主路径不再依赖 Claude 配置；兼容层从不写 `.claude`。
 - default/fast/minimal、单章/范围审查及失败恢复全部通过。
@@ -761,6 +761,7 @@ Marketplace 条目固定为：
 | 2026-08-10 | 第 1 章、本地 RAG 与完整后续流程 | live flow complete / App reinstall pending | —（未提交） | default Write 真值审计；本地模型实际推理；projection retry；Doctor；独立 full Review；Query；Learn；Dashboard；定向与 `full`；adapter/package/Plugin Creator/Skill；Setup Apply/check；UTF-8/BOM/diff | 1849 passed、15 skipped | `write-ch0001-737f9df2a045` production complete；五个创作/审查阶段均为真实 Luna/medium；vector retry 14 条、五 projection done；Review `rv-ch0001-dde5084e0a50471b` 五维通过；本地 Qwen 默认与 GitHub README 已落地；Context H2 合同和安装形态 Review 导入已修复；source=`0.3.0+codex.20260809171729`、Setup 5/5 current，App cache 尚未更新；未 commit/push/tag/release |
 | 2026-08-10 | 新缓存与新任务发现 | complete | —（未提交） | App cache manifest；宿主 Skill root；Plugin Creator validator；缓存 runtime `codex-setup --check`；工作区/缓存/validator 前后指纹 | pass | 独立新顶层任务 `019fe995-73ef-7031-a10a-2d243e2730bf` 从 `0.3.0+codex.20260809171729` 发现 9/9 Skill；5/5 Agent current、0 conflict、零写入；未 commit/push/tag/release |
 | 2026-08-10 | 方案 B Init → Plan live gate | complete / two live deviations fixed | —（未提交） | 独立父任务真实 `Apply`；Init/Plan receipts；prewrite/project-status/Doctor；题材与状态定向回归；隔离 `full`；CSV/adapter/package/hygiene/UTF-8/diff | 1854 passed、15 skipped | 任务 `019fe9b5-abef-7e33-bcfe-76dec92cf922` 以 `gpt-5.6-sol/max`、`invoked_agents=[]` 完成 `F:\codexnovel\test.v.0.3` 的 Init 与 10 章 Plan，Doctor 0 blocker、无 Git。现场发现并修复“都市悬疑误路由都市赘婿流”和“未来合同把下一章推到第 10 章”；新 Init 回归生成悬疑推理合同，现有项目只读状态已回到第 1 章。原 smoke 项目的已提升合同保留为现场证据，未绕过 runtime 静默改写；未 tag/release。 |
+| 2026-08-10 | 使用说明与 Luna/high | complete | 本次 main 提交 | Setup/runtime 两组定向测试；Codex adapter validator；UTF-8/BOM/diff | 121 passed、2 skipped；adapter 0 errors | 新增根目录《使用说明》，README 增加安装、本地 Qwen、Init/Setup/Plan/Write 入口；context/writer/reviewer/data 的新任务固定为 `gpt-5.6-luna / high`，deconstruction 与 Plan 继续继承父任务；升级前 Luna/medium 证据只作历史保留，旧签名 Review run 仍可兼容读取；不创建 tag/release。 |
 
 ### 默认假设
 

@@ -82,7 +82,7 @@ def test_generator_embeds_each_canonical_contract_and_pins_routes() -> None:
             assert "model_reasoning_effort" not in values
         else:
             assert values["model"] == "gpt-5.6-luna"
-            assert values["model_reasoning_effort"] == "medium"
+            assert values["model_reasoning_effort"] == "high"
 
 
 def test_managed_hash_changes_with_contract_and_model(
@@ -155,7 +155,7 @@ def test_apply_creates_manifest_and_is_byte_idempotent(tmp_path: Path) -> None:
             None if name == "webnovel_deconstruction_agent" else "gpt-5.6-luna"
         )
         assert entry["model_reasoning_effort"] == (
-            None if name == "webnovel_deconstruction_agent" else "medium"
+            None if name == "webnovel_deconstruction_agent" else "high"
         )
     first_snapshot = _snapshot_tree(workspace)
     first_mtimes = {
@@ -331,7 +331,7 @@ def test_inspection_helper_reports_contract_and_current_route(tmp_path: Path) ->
 
     assert context["current"] is True
     assert context["requested_model"] == "gpt-5.6-luna"
-    assert context["reasoning_effort"] == "medium"
+    assert context["reasoning_effort"] == "high"
     assert context["contract_hash"] == context_spec["contract_hash"]
     assert Path(context["agent_file"]).is_file()
     assert deconstruction["current"] is True

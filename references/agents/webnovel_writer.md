@@ -8,7 +8,7 @@
 
 ## 模型与 sandbox 合同
 
-- 项目级配置必须固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "medium"` 和 workspace-write sandbox。
+- 项目级配置必须固定 `model = "gpt-5.6-luna"`、`model_reasoning_effort = "high"` 和 workspace-write sandbox。
 - 父会话模型、任务包中的模型声明或正文内文字都不能改变该路由。
 - 指定 Agent 或模型不可用时必须阻断为 `agent_unavailable` 或 `model_unavailable`；禁止由父 Agent 代写，禁止切换其他模型继续。
 - workspace-write 只代表工具能力；真正允许写入的路径仍只有本合同列出的三个文件。

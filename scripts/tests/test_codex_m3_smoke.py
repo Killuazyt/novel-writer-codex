@@ -44,7 +44,7 @@ def _write_rollout(
     parent_id: str = "parent-001",
     role: str = "webnovel_writer",
     model: str = "gpt-5.6-luna",
-    effort: str = "medium",
+    effort: str = "high",
     omit_session_model: bool = False,
     agent_path: str = "webnovel_writer",
     depth: int = 1,
@@ -97,7 +97,7 @@ def _parse(path: Path, sessions_root: Path, **overrides) -> VerifiedRuntimeEvide
         "expected_parent_thread_id": "parent-001",
         "expected_agent_role": "webnovel_writer",
         "expected_model": "gpt-5.6-luna",
-        "expected_reasoning_effort": "medium",
+        "expected_reasoning_effort": "high",
         "sessions_root": sessions_root,
     }
     arguments.update(overrides)
@@ -127,7 +127,7 @@ def test_explicit_codex_rollout_is_verified_and_can_validate_envelope(tmp_path: 
     assert result["accepted"] is True
     assert evidence.agent_name == "webnovel_writer"
     assert evidence.actual_model == "gpt-5.6-luna"
-    assert evidence.actual_reasoning_effort == "medium"
+    assert evidence.actual_reasoning_effort == "high"
 
 
 def test_marker_derived_task_name_binds_real_child_agent_path(tmp_path: Path) -> None:
@@ -350,7 +350,7 @@ def test_rollout_duplicate_turn_id_with_payload_drift_fails_closed(tmp_path: Pat
         ({"expected_parent_thread_id": "different-parent"}, "parent"),
         ({"expected_agent_role": "webnovel_reviewer"}, "role"),
         ({"expected_model": "gpt-5.6-sol"}, "model"),
-        ({"expected_reasoning_effort": "high"}, "effort"),
+        ({"expected_reasoning_effort": "medium"}, "effort"),
     ],
 )
 def test_rollout_identity_mismatch_fails_closed(
@@ -414,7 +414,7 @@ def test_rollout_jsonl_structure_errors_fail_closed(
                 "payload": {
                     "turn_id": "turn-002",
                     "model": "gpt-5.6-luna",
-                    "effort": "high",
+                    "effort": "medium",
                 },
             },
         )
@@ -635,7 +635,7 @@ def test_parent_model_matrix_requires_two_complete_fixed_role_sets() -> None:
                         evidence_source="codex_trace",
                         agent_name=role,
                         actual_model="gpt-5.6-luna",
-                        actual_reasoning_effort="medium",
+                        actual_reasoning_effort="high",
                         thread_id=f"{parent}-{role}",
                         parent_thread_id=parent_evidence.thread_id,
                         raw_sha256="a" * 64,

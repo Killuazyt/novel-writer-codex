@@ -232,7 +232,7 @@ def test_fixed_write_route_is_independent_of_two_parent_models() -> None:
             "webnovel_data_agent",
         ]
         assert {step["requested_model"] for step in route["steps"]} == {"gpt-5.6-luna"}
-        assert {step["requested_reasoning_effort"] for step in route["steps"]} == {"medium"}
+        assert {step["requested_reasoning_effort"] for step in route["steps"]} == {"high"}
         assert route["fallback_allowed"] is False
 
 
@@ -241,7 +241,7 @@ def test_review_route_is_fixed_luna_for_different_parent_models() -> None:
         route = build_workflow_route("review", parent_model=parent)
         assert route["steps"][0]["agent_name"] == "webnovel_reviewer"
         assert route["steps"][0]["requested_model"] == "gpt-5.6-luna"
-        assert route["steps"][0]["requested_reasoning_effort"] == "medium"
+        assert route["steps"][0]["requested_reasoning_effort"] == "high"
 
 
 def test_plan_stays_on_parent_and_never_invokes_writer_or_reviewer() -> None:
@@ -1353,7 +1353,7 @@ def test_agent_envelope_rejects_every_identity_boundary(case: str, expected_code
     elif case == "requested_model":
         envelope["requested_model"] = "gpt-5.6-terra"
     elif case == "requested_effort":
-        envelope["requested_reasoning_effort"] = "high"
+        envelope["requested_reasoning_effort"] = "medium"
     elif case == "artifacts":
         envelope["artifacts"] = {}
     elif case == "verified_mismatch":
@@ -1363,7 +1363,7 @@ def test_agent_envelope_rejects_every_identity_boundary(case: str, expected_code
             evidence_source="codex_trace",
             agent_name="webnovel_reviewer",
             actual_model="gpt-5.6-luna",
-            actual_reasoning_effort="medium",
+            actual_reasoning_effort="high",
             thread_id="child",
             parent_thread_id="parent",
             raw_sha256="not-a-hash",

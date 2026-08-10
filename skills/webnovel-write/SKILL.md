@@ -114,7 +114,7 @@ description: 通过固定 Luna 项目 Agent 和不可变事务 receipt 起草、
 
 ## Agent 与 artifact gate
 
-- context/writer/reviewer/data 必须实际为 `gpt-5.6-luna` / `medium`；缺失、超时、合同
+- context/writer/reviewer/data 必须实际为 `gpt-5.6-luna` / `high`；缺失、超时、合同
   过期、模型不符或 fallback 均阻断。
 - Agent 自报、TOML 与 canned fixture 不是生产 evidence。canned 只允许 test-only 事务，
   其状态不得显示 production complete。

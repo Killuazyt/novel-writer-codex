@@ -10,7 +10,7 @@
         "prepares a run-specific request artifact",
         "binds prepare and accept to the same host-provided CODEX_THREAD_ID UUID",
         "uses the managed webnovel_reviewer child Agent",
-        "requires explicit Codex rollout identity for gpt-5.6-luna medium",
+        "requires explicit Codex rollout identity for gpt-5.6-luna high",
         "persists one run-specific result, metrics file, report, and matching database row",
         "does not write a global previous-chapter tmp artifact"
       ]

@@ -130,7 +130,7 @@ def _route(parent_model: str = "gpt-5.6-sol", parent_effort: str | None = "high"
                 "agent_name": "webnovel_reviewer",
                 "model_source": "fixed",
                 "requested_model": "gpt-5.6-luna",
-                "requested_reasoning_effort": "medium",
+                "requested_reasoning_effort": "high",
                 "sandbox_mode": "read-only",
                 "contract_hash": "a" * 64,
                 "managed_sha256": "b" * 64,
@@ -216,7 +216,7 @@ def _accept_file(
         },
         {
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1", "model": model, "effort": "medium"},
+            "payload": {"turn_id": "turn-1", "model": model, "effort": "high"},
         },
         {
             "type": "response_item",
@@ -246,7 +246,7 @@ def _accept_file(
                         "payload": {
                             "turn_id": f"turn-{index}",
                             "model": model,
-                            "effort": "medium",
+                            "effort": "high",
                         },
                     },
                     {
@@ -586,7 +586,7 @@ def test_prepare_accept_persist_and_resume_without_reviewer_rerun(
     run = get_review_run(project, prepared["run_id"])
     assert run is not None
     assert run["actual_model"] == "gpt-5.6-luna"
-    assert run["actual_reasoning_effort"] == "medium"
+    assert run["actual_reasoning_effort"] == "high"
     assert run["runtime_evidence"]["agent_task_name"] == prepared["agent_task_name"]
     assert run["runtime_evidence"]["agent_path"] == prepared["agent_path"]
     assert Path(run["artifacts"]["result"]["path"]).is_file()
@@ -1529,7 +1529,7 @@ def test_child_and_rollout_cannot_be_replayed_across_review_runs(
             "payload": {
                 "turn_id": "turn-replay",
                 "model": "gpt-5.6-luna",
-                "effort": "medium",
+                "effort": "high",
             },
         },
         {
@@ -3340,7 +3340,7 @@ def _review_runtime_evidence(path: Path) -> object:
         evidence_source="codex_trace",
         agent_name="webnovel_reviewer",
         actual_model="gpt-5.6-luna",
-        actual_reasoning_effort="medium",
+        actual_reasoning_effort="high",
         thread_id="33333333-3333-4333-8333-333333333333",
         parent_thread_id=TEST_PARENT_THREAD_ID,
         raw_sha256=hashlib.sha256(raw).hexdigest(),

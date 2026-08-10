@@ -12,7 +12,7 @@
       "role": "assemble a complete prewrite task brief without writes",
       "sandbox_mode": "read-only",
       "model": "gpt-5.6-luna",
-      "model_reasoning_effort": "medium"
+      "model_reasoning_effort": "high"
     },
     {
       "upstream": null,
@@ -21,7 +21,7 @@
       "role": "draft, repair, and polish only inside the current write-run staging directory",
       "sandbox_mode": "workspace-write",
       "model": "gpt-5.6-luna",
-      "model_reasoning_effort": "medium"
+      "model_reasoning_effort": "high"
     },
     {
       "upstream": "reviewer",
@@ -30,7 +30,7 @@
       "role": "return a strict five-dimension factual review without scores",
       "sandbox_mode": "read-only",
       "model": "gpt-5.6-luna",
-      "model_reasoning_effort": "medium"
+      "model_reasoning_effort": "high"
     },
     {
       "upstream": "data-agent",
@@ -39,7 +39,7 @@
       "role": "produce only the three validated commit artifacts",
       "sandbox_mode": "workspace-write",
       "model": "gpt-5.6-luna",
-      "model_reasoning_effort": "medium"
+      "model_reasoning_effort": "high"
     },
     {
       "upstream": "deconstruction-agent",

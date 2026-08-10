@@ -28,7 +28,7 @@
 - runtime：项目定位、Codex pointer/registry、参考资料 provenance 和旧 Claude 只读兼容已统一；M4 提供 Doctor 只读 SQLite、Query request-file/provenance 与 Dashboard 项目级安全生命周期；M5/M6 新增受控 Init/Learn/Plan/Review、严格 rollout/用户选择 receipt、事务 Write 与安全 Backup 真源校验。
 - Skills：9/9 个 Skill 源适配已实现并通过静态合同。Learn、Review、Init、Plan 与 Write 自动核心已有 gate；Plan authored-conflict、Write blocking 定点修复逐 issue resolution 与作者正文/合同冲突恢复都使用可信父任务 receipt，裸字符串、过期/跨 scope/篡改证据保持 fail-closed。
 - 验证：当前安全收集 1893 项；`full` 为 1771 passed、15 skipped、107 deselected，coverage 90.41%；9 个真实宿主保护路径零变化。真实安装后的新顶层任务发现、Apply/Agent/现场用户裁决和完整写章证据本轮未采集，当前不声称已发布。
-- 自定义 Agents：五份规范合同与托管 TOML 生成器已完成；当前工作区已执行 Setup Apply，五个 Agent 回读为 current。context/writer/reviewer/data 固定 `gpt-5.6-luna` / `medium`，deconstruction 继承父任务配置。两个不同父模型下的 8 份真实子任务轨迹已通过回读。
+- 自定义 Agents：五份规范合同与托管 TOML 生成器已完成。context/writer/reviewer/data 当前固定 `gpt-5.6-luna` / `high`，deconstruction 继承父任务配置；升级前的 Luna/medium 真实子任务轨迹保留为历史证据。合同更新后需重新执行 Setup Apply 并打开新任务。
 - MCP/App：当前不需要。
 
 ## 降级原则

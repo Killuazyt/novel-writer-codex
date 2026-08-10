@@ -18,7 +18,7 @@ Setup 的前向检查已在包含中文、空格、括号和 `&` 的 Windows 路
 
 ## 真实模型路由
 
-Codex Desktop 中分别以 `gpt-5.6-sol / high` 和 `gpt-5.6-terra / high` 启动两个全新父任务。每个父任务依次实际调用 context、writer、reviewer、data；显式 rollout 解析器逐份绑定 child thread、双重 parent id、role、model 与 effort。结果为 8/8 子任务均使用 `gpt-5.6-luna / medium`，无父模型 fallback。
+Codex Desktop 中分别以 `gpt-5.6-sol / high` 和 `gpt-5.6-terra / high` 启动两个全新父任务。每个父任务依次实际调用 context、writer、reviewer、data；显式 rollout 解析器逐份绑定 child thread、双重 parent id、role、model 与 effort。该历史结果为 8/8 子任务使用 `gpt-5.6-luna / medium`，无父模型 fallback；当前合同已升级为 `gpt-5.6-luna / high`，历史 evidence 文件不改写。
 
 另一个 `gpt-5.6-sol / high` 新任务只由父任务生成三步规划；其 rollout 中工具调用数为 0，没有启动 writer/reviewer。结构化、脱敏的角色引用与原始 rollout SHA-256 见 [M3 模型路由证据](evidence/m3-model-routing-2026-08-07.json)。真实任务 UUID、原始 session 文件、提示词和生成正文不进入仓库。
 

@@ -106,7 +106,7 @@ AGENT_SPECS: dict[str, AgentSpec] = {
         contract_file="webnovel_context_agent.md",
         description="Assemble a complete read-only webnovel writing brief and report factual blockers.",
         model="gpt-5.6-luna",
-        model_reasoning_effort="medium",
+        model_reasoning_effort="high",
         sandbox_mode="read-only",
     ),
     "webnovel_writer": AgentSpec(
@@ -114,7 +114,7 @@ AGENT_SPECS: dict[str, AgentSpec] = {
         contract_file="webnovel_writer.md",
         description="Draft, repair, and polish one chapter only inside its authorized staging directory.",
         model="gpt-5.6-luna",
-        model_reasoning_effort="medium",
+        model_reasoning_effort="high",
         sandbox_mode="workspace-write",
     ),
     "webnovel_reviewer": AgentSpec(
@@ -122,7 +122,7 @@ AGENT_SPECS: dict[str, AgentSpec] = {
         contract_file="webnovel_reviewer.md",
         description="Review one webnovel chapter and return strict structured findings without editing files.",
         model="gpt-5.6-luna",
-        model_reasoning_effort="medium",
+        model_reasoning_effort="high",
         sandbox_mode="read-only",
     ),
     "webnovel_data_agent": AgentSpec(
@@ -130,7 +130,7 @@ AGENT_SPECS: dict[str, AgentSpec] = {
         contract_file="webnovel_data_agent.md",
         description="Generate only the three approved post-write artifacts in the authorized staging area.",
         model="gpt-5.6-luna",
-        model_reasoning_effort="medium",
+        model_reasoning_effort="high",
         sandbox_mode="workspace-write",
     ),
     "webnovel_deconstruction_agent": AgentSpec(

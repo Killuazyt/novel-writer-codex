@@ -392,9 +392,11 @@ def _validate_review_run(key: str, run: object) -> None:
             raise RunLedgerError(f"review run {key} has an invalid {field}")
     if run.get("agent_name") != "webnovel_reviewer":
         raise RunLedgerError(f"review run {key} has an invalid agent")
-    if run.get("requested_model") != "gpt-5.6-luna" or run.get(
-        "requested_reasoning_effort"
-    ) != "medium":
+    requested_effort = run.get("requested_reasoning_effort")
+    if (
+        run.get("requested_model") != "gpt-5.6-luna"
+        or requested_effort not in {"medium", "high"}
+    ):
         raise RunLedgerError(f"review run {key} has invalid requested runtime identity")
     if not isinstance(run.get("workspace_root"), str) or not run["workspace_root"]:
         raise RunLedgerError(f"review run {key} has an invalid workspace root")
@@ -470,7 +472,7 @@ def _validate_review_run(key: str, run: object) -> None:
     if run.get("status") in accepted_statuses:
         if (
             run.get("actual_model") != "gpt-5.6-luna"
-            or run.get("actual_reasoning_effort") != "medium"
+            or run.get("actual_reasoning_effort") != requested_effort
             or not isinstance(run.get("reviewer_output_sha256"), str)
             or _SHA256_RE.fullmatch(run["reviewer_output_sha256"]) is None
             or type(run.get("has_blocking")) is not bool

@@ -28,7 +28,7 @@
 - 这是仅维护 Codex 的下游；`.claude` 和 `CLAUDE_*` 只允许只读兼容 fallback，新流程不得写入 `.claude`。
 - `.story-system`、`.webnovel`、`正文`、`设定集`、`大纲` 的业务契约保持兼容，不迁移小说数据。
 - 最终交付 9 个 Codex Skill：保留 8 个 `$webnovel-*` 名称并新增 `$webnovel-setup`。
-- 5 个专用 Agent 必须由 `$webnovel-setup` 显式安装为项目级 `.codex/agents/*.toml`。写章链的 context/writer/reviewer/data 固定 `gpt-5.6-luna` / `medium`，deconstruction 与 `$webnovel-plan` 继承当前主对话模型；缺失、模型不可用或合同哈希过期时阻断，不允许主 Agent 静默模拟或改用其他模型。
+- 5 个专用 Agent 必须由 `$webnovel-setup` 显式安装为项目级 `.codex/agents/*.toml`。写章链的 context/writer/reviewer/data 固定 `gpt-5.6-luna` / `high`，deconstruction 与 `$webnovel-plan` 继承当前主对话模型；缺失、模型不可用或合同哈希过期时阻断，不允许主 Agent 静默模拟或改用其他模型。
 - 业务裁决由主对话提供 2–3 个有限选项并等待用户回答；系统文件、网络或命令权限审批仍交给 Codex 原生 permission/approval，二者不得混用。
 - `$webnovel-init` 默认 `--git-mode off`；初始化 Git、创建提交、push、tag、release 或任何外部发布都必须取得用户的单独明确授权。
 - `$webnovel-review` 先实现单章版，1.0 前再完成一次最多 5 章、逐章串行且可恢复的范围审查。

@@ -94,7 +94,7 @@ Reviewer JSON 自报的模型信息不构成证据。accept 阶段必须验证�
 - 正文章节、只读 context、request 与原始 reviewer 输出的路径和 SHA-256；
 - 每次响应的顺序、schema 状态与输出 SHA-256，最多一次同 Agent、同 route 的序列化重试。
 
-实际身份必须是托管合同指定的 `gpt-5.6-luna` / `medium`。缺少 rollout、合同 hash 漂移、父模型回退、输入变化或身份不一致均必须阻断，不能由父 Agent 修补 JSON。
+实际身份必须是托管合同指定的 `gpt-5.6-luna` / `high`。缺少 rollout、合同 hash 漂移、父模型回退、输入变化或身份不一致均必须阻断，不能由父 Agent 修补 JSON。
 
 通过验证后生成不可变、run-specific 的 `webnovel-review-artifact/v1`。该 artifact 除上述七个业务字段外，必须包含并校验：
 

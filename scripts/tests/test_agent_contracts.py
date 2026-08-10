@@ -87,14 +87,14 @@ def test_every_agent_contract_has_prompt_injection_and_ledger_boundaries(filenam
 
 
 @pytest.mark.parametrize("filename,sandbox", LUNA_AGENTS.items())
-def test_write_chain_agents_pin_luna_medium_without_fallback(
+def test_write_chain_agents_pin_luna_high_without_fallback(
     filename: str,
     sandbox: str,
 ) -> None:
     text = _read_contract(filename)
 
     assert 'model = "gpt-5.6-luna"' in text
-    assert 'model_reasoning_effort = "medium"' in text
+    assert 'model_reasoning_effort = "high"' in text
     assert sandbox in text
     assert "父会话模型" in text
     assert "禁止" in text and "其他模型" in text

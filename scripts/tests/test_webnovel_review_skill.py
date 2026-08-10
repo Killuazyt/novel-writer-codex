@@ -34,7 +34,7 @@ def test_review_skill_requires_live_runtime_evidence_and_finite_decisions() -> N
     text = SKILL.read_text(encoding="utf-8")
     for token in (
         "gpt-5.6-luna",
-        "medium",
+        "high",
         "rollout_path",
         "sessions_root",
         "parent_thread_id",

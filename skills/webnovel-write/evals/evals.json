@@ -39,7 +39,7 @@
       "id": "model_or_evidence_mismatch",
       "mode": "default",
       "expect": [
-        "missing evidence, fallback model or non-medium effort fails closed",
+        "missing evidence, fallback model or non-high effort fails closed",
         "a static agent declaration cannot advance the transaction",
         "no production completion receipt is written"
       ]

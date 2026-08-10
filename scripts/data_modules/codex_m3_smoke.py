@@ -539,7 +539,7 @@ def validate_hook_trust_evidence(
 
 
 def validate_parent_model_matrix(observations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Require two parents and fixed Luna/medium evidence for every fixed role."""
+    """Require two parents and fixed Luna/high evidence for every fixed role."""
 
     if not observations:
         return {"status": "blocked", "accepted": False, "code": "live_model_evidence_required"}
@@ -556,7 +556,7 @@ def validate_parent_model_matrix(observations: Sequence[Mapping[str, Any]]) -> d
             or workflow not in {"write", "review"}
             or evidence.agent_name not in FIXED_AGENT_NAMES
             or evidence.actual_model != "gpt-5.6-luna"
-            or evidence.actual_reasoning_effort != "medium"
+            or evidence.actual_reasoning_effort != "high"
             or evidence.parent_thread_id != parent.thread_id
             or evidence.evidence_source != "codex_trace"
             or parent.evidence_source != "codex_trace"

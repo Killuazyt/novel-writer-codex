@@ -128,7 +128,7 @@ def _mock_route_ready(monkeypatch, *, parent_thread_id="parent-task"):
     )
 
 
-def _write_rollout(sessions_root: Path, *, role: str, thread_id: str, parent_id: str, effort="medium"):
+def _write_rollout(sessions_root: Path, *, role: str, thread_id: str, parent_id: str, effort="high"):
     path = sessions_root / "2026" / "08" / "08" / f"rollout-test-{thread_id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     events = [
@@ -763,7 +763,7 @@ def test_production_agent_stage_requires_verified_runtime_evidence(tmp_path, mon
         evidence_source="codex_task_event",
         agent_name="webnovel_context_agent",
         actual_model="gpt-5.6-luna",
-        actual_reasoning_effort="medium",
+        actual_reasoning_effort="high",
         thread_id="child-1",
         parent_thread_id="parent-1",
         raw_sha256="b" * 64,
@@ -1254,7 +1254,7 @@ def test_rollout_rejects_multiple_assistant_outputs_after_marker(tmp_path):
         },
         {
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
         },
         {
             "type": "response_item",
@@ -1283,7 +1283,7 @@ def test_rollout_rejects_multiple_assistant_outputs_after_marker(tmp_path):
             parent_thread_id="parent-one",
             expected_agent="webnovel_context_agent",
             expected_model="gpt-5.6-luna",
-            expected_effort="medium",
+            expected_effort="high",
             expected_marker=marker,
             expected_task_name=None,
         )
@@ -3825,7 +3825,7 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
     }
     turn = {
         "type": "turn_context",
-        "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+        "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
     }
     assistant = {
         "type": "response_item",
@@ -3897,7 +3897,7 @@ def test_bound_rollout_parser_rejects_each_identity_and_transcript_forgery(
             parent_thread_id=parent_id,
             expected_agent=role,
             expected_model="gpt-5.6-luna",
-            expected_effort="medium",
+            expected_effort="high",
             expected_marker=marker,
             expected_task_name=task_name,
         )
@@ -3935,7 +3935,7 @@ def test_bound_rollout_parser_coalesces_exact_session_and_turn_duplicates(
     }
     turn = {
         "type": "turn_context",
-        "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+        "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
     }
     assistant = {
         "type": "response_item",
@@ -3955,7 +3955,7 @@ def test_bound_rollout_parser_coalesces_exact_session_and_turn_duplicates(
         parent_thread_id=parent_id,
         expected_agent=role,
         expected_model="gpt-5.6-luna",
-        expected_effort="medium",
+        expected_effort="high",
         expected_marker=marker,
         expected_task_name=task_name,
     )
@@ -4033,7 +4033,7 @@ def test_current_desktop_rollout_rejects_task_path_and_marker_scope_forgery(
         },
         {
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
         },
         {
             "type": "response_item",
@@ -4055,7 +4055,7 @@ def test_current_desktop_rollout_rejects_task_path_and_marker_scope_forgery(
             parent_thread_id=parent_id,
             expected_agent="webnovel_context_agent",
             expected_model="gpt-5.6-luna",
-            expected_effort="medium",
+            expected_effort="high",
             expected_marker=marker,
             expected_task_name=task_name,
         )
@@ -4096,7 +4096,7 @@ def test_current_desktop_rollout_rejects_nonfinal_or_duplicate_output(
         },
         {
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
         },
         *[
             {
@@ -4121,7 +4121,7 @@ def test_current_desktop_rollout_rejects_nonfinal_or_duplicate_output(
             parent_thread_id="desktop-output-parent",
             expected_agent="webnovel_context_agent",
             expected_model="gpt-5.6-luna",
-            expected_effort="medium",
+            expected_effort="high",
             expected_marker=marker,
             expected_task_name=task_name,
         )
@@ -4158,7 +4158,7 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
         },
         {
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "medium"},
+            "payload": {"turn_id": "turn-1", "model": "gpt-5.6-luna", "effort": "high"},
         },
         {"type": "response_item", "payload": "ignored"},
         {
@@ -4187,7 +4187,7 @@ def test_bound_rollout_parser_ignores_nonmapping_response_payload(tmp_path: Path
         parent_thread_id=parent_id,
         expected_agent=role,
         expected_model="gpt-5.6-luna",
-        expected_effort="medium",
+        expected_effort="high",
         expected_marker=marker,
         expected_task_name=None,
     )
@@ -4222,7 +4222,7 @@ def test_bound_rollout_parser_rejects_legacy_commentary_without_final(tmp_path: 
             "payload": {
                 "turn_id": "turn-1",
                 "model": "gpt-5.6-luna",
-                "effort": "medium",
+                "effort": "high",
             },
         },
         {
@@ -4253,7 +4253,7 @@ def test_bound_rollout_parser_rejects_legacy_commentary_without_final(tmp_path: 
             parent_thread_id=parent_id,
             expected_agent=role,
             expected_model="gpt-5.6-luna",
-            expected_effort="medium",
+            expected_effort="high",
             expected_marker=marker,
             expected_task_name=None,
         )
